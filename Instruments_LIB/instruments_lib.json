@@ -1,0 +1,139 @@
+{
+  "instrument_library": {
+    "power_supplies_series": [
+      {
+        "series_id": "Keysight_E36300_Series",
+        "series_name": "Keysight E36300 Series",
+        "models": [
+          {
+            "id": "PSU_Keysight_E36312A",
+            "name": "Keysight E36312A",
+            "manufacturer": "Keysight Technologies",
+            "model": "E36312A",
+            "manual_path": "docs/Keysight/E36300_Series/E36312A_manual.pdf",
+            "scpi_commands_docs_path": "Instruments_LIB/docs/Keysight/E36300_Series/Programmable DC Power Supplies E36300 Series.pdf",
+            "interface": {
+              "supported_connection_types": [
+                {
+                  "type": "LXI",
+                  "visa_resource_id_template": "LXI_PSU_{unique_id}",
+                  "address_format_example": "TCPIP0::{IP_ADDRESS}::inst0::INSTR"
+                },
+                {
+                  "type": "GPIB",
+                  "visa_resource_id_template": "GPIB_PSU_{unique_id}",
+                  "address_format_example": "GPIB0::{GPIB_ADDRESS}::INSTR"
+                }
+              ]
+            },
+            "capabilities": {
+              "number_of_channels": 3,
+              "channels": [
+                {
+                  "channel_id": "CH1",
+                  "label": "Channel 1 (0-6V)",
+                  "voltage_output": { "min": 0.0, "max": 6.0, "resolution": 3, "units": "V" },
+                  "current_output": { "min": 0.0, "max": 5.0, "resolution": 3, "units": "A" }
+                },
+                {
+                  "channel_id": "CH2",
+                  "label": "Channel 2 (0-25V)",
+                  "voltage_output": { "min": 0.0, "max": 25.0, "resolution": 3, "units": "V" },
+                  "current_output": { "min": 0.0, "max": 1.0, "resolution": 3, "units": "A" }
+                },
+                {
+                  "channel_id": "CH3",
+                  "label": "Channel 3 (0-25V)",
+                  "voltage_output": { "min": 0.0, "max": 25.0, "resolution": 3, "units": "V" },
+                  "current_output": { "min": 0.0, "max": 1.0, "resolution": 3, "units": "A" }
+                }
+              ],
+              "read_voltage": true,
+              "read_current": true,
+              "trigger_output": false
+            },
+"scpi_commands": {
+              "reset": "*RST",
+              "clear_status": "*CLS",
+              "identification_query": "*IDN?",
+              "error_query": "SYST:ERR?",
+              "self_test": "*TST?",
+
+              "select_channel": "INST:SEL CH{channel_number}",
+              "set_voltage": "VOLT {value}",
+              "set_current": "CURR {value}",
+              "read_voltage": "MEAS:VOLT? CH{channel_number}",
+              "read_current": "MEAS:CURR? CH{channel_number}",
+              "read_power": "MEAS:POW? CH{channel_number}",
+              "output_on": "OUTP ON",
+              "output_off": "OUTP OFF",
+              "output_on_channels": "OUTP ON,(@{channel_list})",
+              "output_off_channels": "OUTP OFF,(@{channel_list})",
+              "output_state_query": "OUTP?",
+              "output_state_query_channels": "OUTP? (@{channel_list})",
+
+              "set_over_voltage_protection": "VOLT:PROT {value},(@{channel_number})",
+              "query_over_voltage_protection": "VOLT:PROT? (@{channel_number})",
+              "query_over_voltage_protection_tripped": "VOLT:PROT:TRIP?",
+              "clear_over_voltage_protection_tripped": "VOLT:PROT:CLE",
+
+              "set_sense_mode": "VOLT:SENS:SOUR {mode}, (@{channel_number})",
+              "query_sense_mode": "VOLT:SENS:SOUR? (@{channel_number})",
+
+              "query_status_byte": "*STB?",
+              "query_event_status_register": "*ESR?",
+              "enable_event_status_register": "*ESE {value}",
+              "query_event_status_enable": "*ESE?"
+            }
+          }
+
+        ]
+      }
+
+    ],
+    "dataloggers_series": [
+      {
+        "series_id": "Keysight_3497X_Series",
+        "series_name": "Keysight 3497XA/B Series",
+        "models": [
+          {
+            "id": "DL_Keysight_34972A",
+            "name": "Keysight 34972A",
+            "manufacturer": "Keysight Technologies",
+            "model": "34972A",
+            "documentation_path": "docs/Keysight/3497X_Series/34972A_manual.pdf",
+            "interface": {
+              "supported_connection_types": [
+                {
+                  "type": "USB-TMC",
+                  "visa_resource_id_template": "USB_DL_{serial_number}",
+                  "address_format_example": "USB0::{VENDOR_ID}::{PRODUCT_ID}::{SERIAL_NUMBER}::INSTR"
+                },
+                {
+                  "type": "LXI",
+                  "visa_resource_id_template": "LXI_DL_{unique_id}",
+                  "address_format_example": "TCPIP0::{IP_ADDRESS}::inst0::INSTR"
+                }
+              ]
+            },
+            "capabilities": {
+              "channels": 20,
+              "max_sample_rate_sps": 2000,
+              "measurement_types": ["VOLT:DC", "CURR:DC", "TEMP"],
+              "trigger_source": ["BUS", "EXT", "IMM"],
+              "internal_memory_kpoints": 50
+            },
+            "scpi_commands": {
+              "select_channels": "ROUT:SCAN (@{channels})",
+              "setup_voltage_range": "SENS:VOLT:DC:RANG {range},(@{channels})",
+              "read_scan": "READ?",
+              "trigger_bus": "*TRG",
+              "set_trigger_source": "TRIG:SOUR {source}",
+              "set_trigger_count": "TRIG:COUN {count}"
+            }
+          }
+        ]
+      }
+    ]
+  }
+}
