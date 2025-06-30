@@ -60,5 +60,17 @@
   "iout_list_placeholder": "z.B.: 0.1,0.2,0.5,1",
   "iout_start_placeholder": "Start (z.B.: 0.1)",
   "iout_stop_placeholder": "Ende (z.B.: 1)",
-  "iout_points_label": "N Iout Punkte"
+  "iout_points_label": "N Iout Punkte",
+  "added_instruments": "Hinzugefügte Instrumente",
+  "remove_selected": "Ausgewähltes entfernen",
+  "add_new_instrument": "Neues Instrument hinzufügen",
+  "instance_name": "Instanzname",
+  "instrument_type": "Instrumententyp",
+  "series": "Serie",
+  "model": "Modell",
+  "connection_type": "Verbindungstyp",
+  "visa_address": "VISA-Adresse",
+  "channel_assignments": "Kanalzuweisungen",
+  "add_instrument": "Instrument hinzufügen",
+  "raw_json": "Rohes JSON"
 }

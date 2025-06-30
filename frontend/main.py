@@ -6,8 +6,7 @@ from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QTabWidget, QWidget, QVBoxLayout, QLabel, QAction, QDialog, QPushButton, QHBoxLayout, QComboBox, QCheckBox, QFileDialog, QListWidget, QListWidgetItem, QSplitter, QRadioButton, QButtonGroup, QSpinBox, QGroupBox, QFormLayout, QTextEdit
 )
 from PyQt5.QtCore import Qt, QSettings
-
-from PyQt5.QtWidgets import QVBoxLayout, QLabel, QLineEdit, QPushButton, QFormLayout
+from PyQt5.QtWidgets import QDialog, QVBoxLayout, QFormLayout, QLineEdit, QPushButton, QLabel, QComboBox, QMessageBox, QHBoxLayout
 
 class Translator:
     """
@@ -1008,49 +1007,338 @@ class WasFileDialog(QDialog):
 
 class InstFileDialog(QDialog):
     """
-    Dialog for editing a .inst (instruments) file.
+    Dialog per la modifica di un file .inst (strumenti).
+    Permette di aggiungere strumenti dalla libreria instruments_lib.json con dettagli istanza.
+    Selezione strumento: tipo → serie → modello.
     """
     def __init__(self, file_path, translator, parent=None):
-        """
-        Initialize the dialog and load the .inst file data.
-        :param file_path: Path to the .inst file.
-        :param translator: Translator instance.
-        :param parent: Parent widget.
-        """
         super().__init__(parent)
         self.translator = translator
         self.file_path = file_path
         self.setWindowTitle(self.translator.t('edit_inst_file'))
         self.setModal(True)
         layout = QVBoxLayout()
-        from PyQt5.QtWidgets import QLabel, QTextEdit
-        self.data_edit = QTextEdit()
-        # Load file content
+        from PyQt5.QtWidgets import QLabel, QTextEdit, QListWidget, QPushButton, QHBoxLayout, QMessageBox, QComboBox, QLineEdit, QFormLayout, QDialogButtonBox
+        # Carica dati file .inst
         try:
             with open(self.file_path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-            self.data_edit.setText(json.dumps(data, indent=2))
-        except Exception as e:
-            self.data_edit.setText('{}')
-        layout.addWidget(QLabel(self.translator.t('instruments_data')))
+                self.inst_data = json.load(f)
+        except Exception:
+            self.inst_data = {"instruments": []}
+        # Carica libreria strumenti
+        self.instrument_library = self.load_instrument_library()
+        # Lista strumenti già aggiunti
+        layout.addWidget(QLabel(self.translator.t('added_instruments') if hasattr(self.translator, 't') else 'Strumenti aggiunti'))
+        self.instruments_list_widget = QListWidget()
+        self.refresh_instruments_list()
+        layout.addWidget(self.instruments_list_widget)
+        remove_btn = QPushButton(self.translator.t('remove_selected') if hasattr(self.translator, 't') else 'Rimuovi selezionato')
+        remove_btn.clicked.connect(self.remove_selected_instrument)
+        layout.addWidget(remove_btn)
+        # --- Form per aggiunta nuovo strumento ---
+        layout.addWidget(QLabel(self.translator.t('add_new_instrument') if hasattr(self.translator, 't') else 'Aggiungi nuovo strumento'))
+        form = QFormLayout()
+        self.instance_name_edit = QLineEdit()
+        form.addRow(self.translator.t('instance_name') if hasattr(self.translator, 't') else 'Nome istanza', self.instance_name_edit)
+        # Menu tipo strumento
+        self.type_combo = QComboBox()
+        self.type_map = {
+            'power_supplies': 'Alimentatore',
+            'dataloggers': 'Datalogger',
+            'oscilloscopes': 'Oscilloscopio'
+        }
+        for k, v in self.type_map.items():
+            self.type_combo.addItem(v, k)
+        self.type_combo.currentIndexChanged.connect(self.update_series_combo)
+        form.addRow(self.translator.t('instrument_type') if hasattr(self.translator, 't') else 'Tipo strumento', self.type_combo)
+        # Menu serie
+        self.series_combo = QComboBox()
+        self.series_combo.currentIndexChanged.connect(self.update_model_combo)
+        form.addRow(self.translator.t('series') if hasattr(self.translator, 't') else 'Serie', self.series_combo)
+        # Menu modello
+        self.model_combo = QComboBox()
+        self.model_combo.currentIndexChanged.connect(self.update_connection_types)
+        form.addRow(self.translator.t('model') if hasattr(self.translator, 't') else 'Modello', self.model_combo)
+        # Tipo connessione
+        self.connection_type_combo = QComboBox()
+        form.addRow(self.translator.t('connection_type') if hasattr(self.translator, 't') else 'Tipo connessione', self.connection_type_combo)
+        # Sostituisco QLineEdit con QPushButton e QLabel (readonly)
+        self.visa_address_btn = QPushButton(self.translator.t('compose_visa_address'))
+        self.visa_address_btn.clicked.connect(self.open_visa_address_dialog)
+        self.visa_address_label = QLabel('')
+        self.visa_address_label.setStyleSheet('background:#eee; border:1px solid #ccc; padding:2px;')
+        form.addRow(self.translator.t('visa_address'), self.visa_address_btn)
+        form.addRow(self.translator.t('composed_address'), self.visa_address_label)
+        # Canali
+        self.channels_widget = QListWidget()
+        form.addRow(self.translator.t('channel_assignments') if hasattr(self.translator, 't') else 'Assegnazione canali', self.channels_widget)
+        self.model_combo.currentIndexChanged.connect(self.update_channels_widget)
+        layout.addLayout(form)
+        add_btn = QPushButton(self.translator.t('add_instrument') if hasattr(self.translator, 't') else 'Aggiungi strumento')
+        add_btn.clicked.connect(self.add_instrument_to_inst)
+        layout.addWidget(add_btn)
+        # --- Fine form ---
+        # Editor JSON raw (opzionale, solo per debug)
+        self.data_edit = QTextEdit()
+        self.data_edit.setText(json.dumps(self.inst_data, indent=2))
+        layout.addWidget(QLabel(self.translator.t('raw_json') if hasattr(self.translator, 't') else 'JSON grezzo'))
         layout.addWidget(self.data_edit)
         save_btn = QPushButton(self.translator.t('save'))
         save_btn.clicked.connect(self.save_changes)
         layout.addWidget(save_btn)
         self.setLayout(layout)
+        self.update_series_combo()
 
-    def save_changes(self):
-        """
-        Save the edited data back to the .inst file.
-        """
+    def load_instrument_library(self):
+        lib_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'Instruments_LIB', 'instruments_lib.json')
         try:
-            data = json.loads(self.data_edit.toPlainText())
+            with open(lib_path, 'r', encoding='utf-8') as f:
+                return json.load(f)['instrument_library']
+        except Exception:
+            return {}
+
+    def refresh_instruments_list(self):
+        self.instruments_list_widget.clear()
+        for inst in self.inst_data.get('instruments', []):
+            instance_name = inst.get('instance_name', '')
+            generic_id = inst.get('instrument_generic_id', '')
+            # Ricerca tipo, serie, modello dalla libreria
+            type_label = series_label = model_label = ''
+            for type_key, type_list in self.instrument_library.items():
+                for serie in type_list:
+                    for model in serie.get('models', []):
+                        if model.get('id') == generic_id:
+                            # Trova le label localizzate
+                            type_label = self.type_map.get(type_key, type_key)
+                            series_label = serie.get('series_name', serie.get('series_id', ''))
+                            model_label = model.get('name', model.get('id', ''))
+            label = f"{instance_name} ({type_label}, {series_label}, {model_label})"
+            self.instruments_list_widget.addItem(label)
+
+    def remove_selected_instrument(self):
+        row = self.instruments_list_widget.currentRow()
+        if row >= 0:
+            del self.inst_data['instruments'][row]
+            self.refresh_instruments_list()
+            self.data_edit.setText(json.dumps(self.inst_data, indent=2))
+            self.save_changes(auto=True)
+
+    def update_series_combo(self):
+        self.series_combo.clear()
+        type_key = self.type_combo.currentData()
+        series_list = self.instrument_library.get(type_key, [])
+        for serie in series_list:
+            label = serie.get('series_name', serie.get('series_id', ''))
+            self.series_combo.addItem(label, serie)
+        self.update_model_combo()
+
+    def update_model_combo(self):
+        self.model_combo.clear()
+        serie = self.series_combo.currentData()
+        if not serie:
+            return
+        for model in serie.get('models', []):
+            label = model.get('name', model.get('id', ''))
+            self.model_combo.addItem(label, model)
+        self.update_connection_types()
+        self.update_channels_widget()
+
+    def update_connection_types(self):
+        self.connection_type_combo.clear()
+        model = self.model_combo.currentData()
+        if not model:
+            return
+        conn_types = model.get('interface', {}).get('supported_connection_types', [])
+        for c in conn_types:
+            self.connection_type_combo.addItem(c['type'], c)
+        if conn_types:
+            self.visa_address_btn.setEnabled(True)
+            self.visa_address_label.setEnabled(True)
+            self.visa_address_btn.setText(self.translator.t('compose_visa_address'))
+            self.visa_address_label.setText('')
+            self.visa_address_label.setStyleSheet('background:#fff; border:1px solid #ccc; padding:2px;')
+        else:
+            self.visa_address_btn.setEnabled(False)
+            self.visa_address_label.setEnabled(False)
+            self.visa_address_label.setText('N/A')
+            self.visa_address_label.setStyleSheet('background:#eee; border:1px solid #ccc; padding:2px;')
+
+    def update_channels_widget(self):
+        self.channels_widget.clear()
+        model = self.model_combo.currentData()
+        type_key = self.type_combo.currentData()
+        if not model:
+            return
+        if type_key == 'power_supplies':
+            channels = model.get('capabilities', {}).get('channels', [])
+            for ch in channels:
+                self.channels_widget.addItem(f"{ch.get('label','')} [{ch.get('channel_id','')}] (nome canale personalizzabile)")
+        elif type_key == 'dataloggers':
+            n = model.get('capabilities', {}).get('channels', 0)
+            for i in range(1, n+1):
+                self.channels_widget.addItem(f"Segnale {i} (numero canale personalizzabile)")
+        elif type_key == 'oscilloscopes':
+            channels = model.get('capabilities', {}).get('channels', [])
+            for ch in channels:
+                self.channels_widget.addItem(f"{ch.get('label','')} [{ch.get('channel_id','')}] (nome segnale personalizzabile)")
+
+    def open_visa_address_dialog(self):
+        conn_type = self.connection_type_combo.currentData()
+        dlg = VisaAddressDialog(self, self.translator, conn_type)
+        if dlg.exec_() == QDialog.Accepted:
+            self.visa_address_label.setText(dlg.address)
+
+    def add_instrument_to_inst(self):
+        type_key = self.type_combo.currentData()
+        serie = self.series_combo.currentData()
+        model = self.model_combo.currentData()
+        if not model:
+            return
+        instance_name = self.instance_name_edit.text().strip()
+        if not instance_name:
+            from PyQt5.QtWidgets import QMessageBox
+            QMessageBox.warning(self, 'Errore', 'Inserire un nome istanza')
+            return
+        conn_type = self.connection_type_combo.currentData()
+        visa_addr = self.visa_address_label.text().strip()
+        channel_assignments = []
+        for i in range(self.channels_widget.count()):
+            ch_item = self.channels_widget.item(i).text()
+            from PyQt5.QtWidgets import QInputDialog
+            if type_key == 'dataloggers':
+                signal_name, ok = QInputDialog.getText(self, 'Assegna segnale', f'Nome segnale per {ch_item}:')
+                if not ok:
+                    continue
+                channel_number, ok = QInputDialog.getText(self, 'Numero canale', f'Numero canale per {signal_name}:')
+                if not ok:
+                    continue
+                channel_assignments.append({"signal_name": signal_name, "channel_number": channel_number})
+            else:
+                signal_name, ok = QInputDialog.getText(self, 'Assegna canale', f'Nome segnale/canale per {ch_item}:')
+                if not ok:
+                    continue
+                if '[' in ch_item and ']' in ch_item:
+                    channel_id = ch_item.split('[')[-1].split(']')[0]
+                else:
+                    channel_id = f"CH{i+1}"
+                channel_assignments.append({"channel_name" if type_key=="power_supplies" else "signal_name": signal_name, "channel_id": channel_id})
+        new_instr = {
+            "instance_name": instance_name,
+            "instrument_generic_id": model.get('id'),
+            "actual_connection_type": conn_type['type'] if conn_type else '',
+            "actual_visa_address": visa_addr,
+            "channel_assignments": channel_assignments
+        }
+        self.inst_data.setdefault('instruments', []).append(new_instr)
+        self.refresh_instruments_list()
+        self.data_edit.setText(json.dumps(self.inst_data, indent=2))
+        self.save_changes(auto=True)
+
+    def save_changes(self, auto=False):
+        try:
+            if auto:
+                data = self.inst_data
+            else:
+                data = json.loads(self.data_edit.toPlainText())
+                self.inst_data = data
             with open(self.file_path, 'w', encoding='utf-8') as f:
                 json.dump(data, f, indent=2)
-            self.accept()
+            if not auto:
+                self.accept()
         except Exception as e:
             from PyQt5.QtWidgets import QMessageBox
             QMessageBox.warning(self, self.translator.t('error'), str(e))
+
+class VisaAddressDialog(QDialog):
+    """
+    Dialog per la composizione parametrica dell'indirizzo VISA.
+    Mostra i campi necessari in base al tipo di interfaccia selezionato.
+    """
+    def __init__(self, parent, translator, conn_type):
+        super().__init__(parent)
+        self.translator = translator
+        self.conn_type = conn_type  # dict con info tipo connessione
+        self.setWindowTitle(self.translator.t('compose_visa_address'))
+        self.setModal(True)
+        self.address = ''
+        layout = QVBoxLayout()
+        self.fields = {}
+        form = QFormLayout()
+        t = conn_type['type'].lower() if conn_type else ''
+        # LXI (TCP/IP)
+        if t in ['lxi', 'tcpip', 'ethernet']:
+            self.ip_edit = QLineEdit()
+            self.port_edit = QLineEdit()
+            self.port_edit.setText('5025')
+            form.addRow(self.translator.t('ip_address'), self.ip_edit)
+            form.addRow(self.translator.t('port'), self.port_edit)
+            self.fields = {'ip': self.ip_edit, 'port': self.port_edit}
+        # GPIB
+        elif t == 'gpib':
+            self.gpib_board = QLineEdit()
+            self.gpib_board.setText('0')
+            self.gpib_addr = QLineEdit()
+            form.addRow(self.translator.t('gpib_board'), self.gpib_board)
+            form.addRow(self.translator.t('gpib_address'), self.gpib_addr)
+            self.fields = {'board': self.gpib_board, 'address': self.gpib_addr}
+        # USB
+        elif t == 'usb':
+            self.usb_serial = QLineEdit()
+            form.addRow(self.translator.t('usb_serial'), self.usb_serial)
+            self.fields = {'serial': self.usb_serial}
+        # RS232
+        elif t in ['rs232', 'serial']:
+            self.com_port = QLineEdit()
+            self.baudrate = QLineEdit()
+            self.baudrate.setText('9600')
+            form.addRow(self.translator.t('com_port'), self.com_port)
+            form.addRow(self.translator.t('baudrate'), self.baudrate)
+            self.fields = {'com': self.com_port, 'baud': self.baudrate}
+        # Altro
+        else:
+            self.generic = QLineEdit()
+            form.addRow(self.translator.t('visa_address'), self.generic)
+            self.fields = {'address': self.generic}
+        layout.addLayout(form)
+        # Pulsante verifica
+        btn_row = QHBoxLayout()
+        self.check_btn = QPushButton(self.translator.t('check_connection'))
+        self.check_btn.clicked.connect(self.check_connection)
+        btn_row.addWidget(self.check_btn)
+        self.ok_btn = QPushButton(self.translator.t('ok'))
+        self.ok_btn.clicked.connect(self.accept)
+        btn_row.addWidget(self.ok_btn)
+        layout.addLayout(btn_row)
+        self.setLayout(layout)
+    def compose_address(self):
+        t = self.conn_type['type'].lower() if self.conn_type else ''
+        if t in ['lxi', 'tcpip', 'ethernet']:
+            ip = self.fields['ip'].text().strip()
+            port = self.fields['port'].text().strip()
+            return f"TCPIP::{ip}::{port}::SOCKET"
+        elif t == 'gpib':
+            board = self.fields['board'].text().strip()
+            addr = self.fields['address'].text().strip()
+            return f"GPIB{board}::{addr}::INSTR"
+        elif t == 'usb':
+            serial = self.fields['serial'].text().strip()
+            return f"USB::{serial}::INSTR"
+        elif t in ['rs232', 'serial']:
+            com = self.fields['com'].text().strip()
+            baud = self.fields['baud'].text().strip()
+            return f"ASRL{com}::INSTR (baudrate {baud})"
+        else:
+            return self.fields['address'].text().strip()
+    def check_connection(self):
+        # Mock: validazione sintattica base
+        addr = self.compose_address()
+        if not addr or '::' not in addr:
+            QMessageBox.warning(self, self.translator.t('error'), self.translator.t('invalid_address'))
+            return
+        QMessageBox.information(self, self.translator.t('check_connection'), self.translator.t('address_valid'))
+    def accept(self):
+        self.address = self.compose_address()
+        super().accept()
 
 if __name__ == '__main__':
     """
