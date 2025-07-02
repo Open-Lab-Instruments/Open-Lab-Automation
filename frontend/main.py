@@ -1018,7 +1018,13 @@ class InstFileDialog(QDialog):
         self.setWindowTitle(self.translator.t('edit_inst_file'))
         self.setModal(True)
         layout = QVBoxLayout()
-        from PyQt5.QtWidgets import QLabel, QTextEdit, QListWidget, QPushButton, QHBoxLayout, QMessageBox, QComboBox, QLineEdit, QFormLayout, QDialogButtonBox
+        # Nuova mappa: type_key -> (label, series_key)
+        self.type_map = {
+            'power_supplies': (self.translator.t('power_supply') if hasattr(self.translator, 't') else 'Alimentatore', 'power_supplies_series'),
+            'dataloggers': (self.translator.t('datalogger') if hasattr(self.translator, 't') else 'Datalogger', 'dataloggers_series'),
+            'oscilloscopes': (self.translator.t('oscilloscope') if hasattr(self.translator, 't') else 'Oscilloscopio', 'oscilloscopes_series'),
+            'electronic_loads': (self.translator.t('electronic_load') if hasattr(self.translator, 't') else 'Carico elettronico', 'electronic_loads_series')
+        }
         # Carica dati file .inst
         try:
             with open(self.file_path, 'r', encoding='utf-8') as f:
@@ -1042,12 +1048,7 @@ class InstFileDialog(QDialog):
         form.addRow(self.translator.t('instance_name') if hasattr(self.translator, 't') else 'Nome istanza', self.instance_name_edit)
         # Menu tipo strumento
         self.type_combo = QComboBox()
-        self.type_map = {
-            'power_supplies': 'Alimentatore',
-            'dataloggers': 'Datalogger',
-            'oscilloscopes': 'Oscilloscopio'
-        }
-        for k, v in self.type_map.items():
+        for k, (v, _) in self.type_map.items():
             self.type_combo.addItem(v, k)
         self.type_combo.currentIndexChanged.connect(self.update_series_combo)
         form.addRow(self.translator.t('instrument_type') if hasattr(self.translator, 't') else 'Tipo strumento', self.type_combo)
@@ -1102,14 +1103,13 @@ class InstFileDialog(QDialog):
         for inst in self.inst_data.get('instruments', []):
             instance_name = inst.get('instance_name', '')
             generic_id = inst.get('instrument_generic_id', '')
-            # Ricerca tipo, serie, modello dalla libreria
+            # Ricerca tipo, serie, modello dalla libreria aggiornata
             type_label = series_label = model_label = ''
-            for type_key, type_list in self.instrument_library.items():
-                for serie in type_list:
+            for type_key, (type_label_val, series_key) in self.type_map.items():
+                for serie in self.instrument_library.get(series_key, []):
                     for model in serie.get('models', []):
                         if model.get('id') == generic_id:
-                            # Trova le label localizzate
-                            type_label = self.type_map.get(type_key, type_key)
+                            type_label = type_label_val
                             series_label = serie.get('series_name', serie.get('series_id', ''))
                             model_label = model.get('name', model.get('id', ''))
             label = f"{instance_name} ({type_label}, {series_label}, {model_label})"
@@ -1126,7 +1126,8 @@ class InstFileDialog(QDialog):
     def update_series_combo(self):
         self.series_combo.clear()
         type_key = self.type_combo.currentData()
-        series_list = self.instrument_library.get(type_key, [])
+        series_key = self.type_map[type_key][1] if type_key in self.type_map else None
+        series_list = self.instrument_library.get(series_key, []) if series_key else []
         for serie in series_list:
             label = serie.get('series_name', serie.get('series_id', ''))
             self.series_combo.addItem(label, serie)
@@ -1181,6 +1182,16 @@ class InstFileDialog(QDialog):
             channels = model.get('capabilities', {}).get('channels', [])
             for ch in channels:
                 self.channels_widget.addItem(f"{ch.get('label','')} [{ch.get('channel_id','')}] (nome segnale personalizzabile)")
+        elif type_key == 'electronic_loads':
+            # Mostra slot o canali se presenti
+            channels = model.get('capabilities', {}).get('channels', [])
+            if channels:
+                for ch in channels:
+                    self.channels_widget.addItem(f"{ch.get('label','')} [{ch.get('channel_id','')}] (nome canale personalizzabile)")
+            else:
+                n_slots = model.get('capabilities', {}).get('number_of_slots', 0)
+                for i in range(1, n_slots+1):
+                    self.channels_widget.addItem(f"Slot {i} (slot personalizzabile)")
 
     def open_visa_address_dialog(self):
         conn_type = self.connection_type_combo.currentData()
