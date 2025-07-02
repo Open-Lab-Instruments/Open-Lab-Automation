@@ -260,6 +260,18 @@ class MainWindow(QMainWindow):
         self.project_files_list.itemDoubleClicked.connect(self.edit_project_file)
         # Always start maximized/fullscreen
         self.showMaximized()
+        # --- Open last project if available ---
+        settings = QSettings('LabAutomation', 'App')
+        last_project_path = settings.value('last_project_path', '', type=str)
+        if last_project_path and os.path.isfile(last_project_path):
+            try:
+                with open(last_project_path, 'r', encoding='utf-8') as f:
+                    project_data = json.load(f)
+                self.current_project_dir = os.path.dirname(last_project_path)
+                self.current_project_data = project_data
+                self.refresh_project_files()
+            except Exception:
+                pass
 
     def init_menu(self):
         """
@@ -324,7 +336,6 @@ class MainWindow(QMainWindow):
             project_name, ok = QInputDialog.getText(self, self.translator.t('project'), self.translator.t('enter_project_name'))
             if not ok or not project_name.strip():
                 return
-            import uuid
             project_id = str(uuid.uuid4())
             now = datetime.datetime.now().isoformat()
             # Load naming settings
@@ -359,6 +370,8 @@ class MainWindow(QMainWindow):
             self.current_project_data = project_data
             self.refresh_project_files()
             QMessageBox.information(self, self.translator.t('project'), self.translator.t('project_created')+f'\n{dir_path}')
+            # Salva percorso ultimo progetto
+            settings.setValue('last_project_path', project_file)
             # Ask if add file now
             reply = QMessageBox.question(self, self.translator.t('add_file'), self.translator.t('add_file_now'), QMessageBox.Yes | QMessageBox.No)
             if reply == QMessageBox.Yes:
@@ -378,6 +391,9 @@ class MainWindow(QMainWindow):
                 self.current_project_data = project_data
                 self.refresh_project_files()
                 QMessageBox.information(self, self.translator.t('project'), self.translator.t('project_opened')+f'\n{project_data.get("project_name", "")}')
+                # Salva percorso ultimo progetto
+                settings = QSettings('LabAutomation', 'App')
+                settings.setValue('last_project_path', file_path)
             except Exception as e:
                 QMessageBox.warning(self, self.translator.t('project'), str(e))
 
@@ -690,7 +706,8 @@ class EffFileDialog(QDialog):
         # Main horizontal layout: left parameters, right JSON editor
         main_layout = QtW.QHBoxLayout()
         # --- Left section: Vin Sweep parameters ---
-        left_layout = QtW.QVBoxLayout()
+        self.left_layout = QtW.QVBoxLayout()
+        self.setup_dynamic_variable_selectors()  # <--- AGGIUNTA QUI
         group_vin = QtW.QGroupBox(self.translator.t('vin_sweep'))
         form_vin = QtW.QFormLayout()
         # Input mode: list of values or range
@@ -722,7 +739,7 @@ class EffFileDialog(QDialog):
         range_row_vin.addWidget(self.vin_points_spin)
         form_vin.addRow(range_row_vin)
         group_vin.setLayout(form_vin)
-        left_layout.addWidget(group_vin)
+        self.left_layout.addWidget(group_vin)
         # --- Iout Sweep section ---
         group_iout = QtW.QGroupBox(self.translator.t('iout_sweep'))
         form_iout = QtW.QFormLayout()
@@ -754,12 +771,12 @@ class EffFileDialog(QDialog):
         range_row_iout.addWidget(self.iout_points_spin)
         form_iout.addRow(range_row_iout)
         group_iout.setLayout(form_iout)
-        left_layout.addWidget(group_iout)
+        self.left_layout.addWidget(group_iout)
         # Button to apply parameters to JSON
         self.apply_params_btn = QtW.QPushButton(self.translator.t('apply_to_data'))
         self.apply_params_btn.clicked.connect(self.apply_params_to_json)
-        left_layout.addWidget(self.apply_params_btn)
-        left_layout.addStretch()
+        self.left_layout.addWidget(self.apply_params_btn)
+        self.left_layout.addStretch()
         # --- Right section: JSON editor ---
         right_layout = QtW.QVBoxLayout()
         self.data_edit = QtW.QTextEdit()
@@ -778,7 +795,7 @@ class EffFileDialog(QDialog):
         save_btn.clicked.connect(self.save_changes)
         right_layout.addWidget(save_btn)
         # --- Combine layouts ---
-        main_layout.addLayout(left_layout, 1)
+        main_layout.addLayout(self.left_layout, 1)
         main_layout.addLayout(right_layout, 2)
         self.setLayout(main_layout)
         # Prefill parameters on the left if present in JSON
@@ -786,9 +803,82 @@ class EffFileDialog(QDialog):
         # Sync parameters if JSON is manually modified
         self.data_edit.textChanged.connect(self.sync_params_from_json)
 
+    def get_inst_file_variables(self):
+        """
+        Carica i nomi delle variabili di setpoint (VAR_set) e misura (VAR) dal file .inst associato al progetto.
+        Restituisce due liste: setpoint_vars, measured_vars.
+        """
+        import os, json
+        # Trova la directory del progetto e il file .inst associato
+        project_dir = os.path.dirname(self.file_path)
+        # Cerca il file .json del progetto nella stessa cartella
+        project_json = None
+        for f in os.listdir(project_dir):
+            if f.endswith('.json'):
+                try:
+                    with open(os.path.join(project_dir, f), 'r', encoding='utf-8') as pj:
+                        data = json.load(pj)
+                    if 'inst_file' in data:
+                        project_json = data
+                        break
+                except Exception:
+                    continue
+        if not project_json:
+            return [], []
+        inst_file = project_json.get('inst_file')
+        inst_path = os.path.join(project_dir, inst_file)
+        if not os.path.isfile(inst_path):
+            return [], []
+        try:
+            with open(inst_path, 'r', encoding='utf-8') as f:
+                inst_data = json.load(f)
+        except Exception:
+            return [], []
+        setpoint_vars = []
+        measured_vars = []
+        # Estrai variabili dai canali degli strumenti
+        for inst in inst_data.get('instruments', []):
+            type_key = inst.get('instrument_type', '')
+            channels = inst.get('channels', [])
+            if type_key in ['power_supplies', 'electronic_loads']:
+                for ch in channels:
+                    var = ch.get('variable', '')
+                    if var:
+                        setpoint_vars.append(var)
+            elif type_key in ['dataloggers']:
+                for ch in channels:
+                    var = ch.get('measured_variable', '')
+                    if var:
+                        measured_vars.append(var)
+        # Rimuovi duplicati e ordina
+        setpoint_vars = sorted(set(setpoint_vars))
+        measured_vars = sorted(set(setpoint_vars + measured_vars))
+        return setpoint_vars, measured_vars
+
+    def setup_dynamic_variable_selectors(self):
+        """
+        Crea le combobox per la selezione delle variabili sweep (setpoint) e misura, usando i nomi dinamici dal .inst.
+        """
+        set_vars, meas_vars = self.get_inst_file_variables()
+        # Sweep variable (setpoint)
+        self.sweep_var_combo = QComboBox()
+        for v in set_vars:
+            self.sweep_var_combo.addItem(f"{v}_set", v)
+        self.sweep_var_combo.setToolTip(self.translator.t('select_sweep_variable'))
+        # Measured variable
+        self.measured_var_combo = QComboBox()
+        for v in meas_vars:
+            self.measured_var_combo.addItem(v, v)
+        self.measured_var_combo.setToolTip(self.translator.t('select_measured_variable'))
+        # Inserisci le combobox in cima al layout a sinistra
+        self.left_layout.insertWidget(0, QLabel(self.translator.t('sweep_variable_label')))
+        self.left_layout.insertWidget(1, self.sweep_var_combo)
+        self.left_layout.insertWidget(2, QLabel(self.translator.t('measured_variable_label')))
+        self.left_layout.insertWidget(3, self.measured_var_combo)
+
     def populate_params_from_json(self):
         """
-        Popola i campi del form a sinistra leggendo i dati dal JSON (se presenti).
+        Popola i campi del form a sinistra leggendo i dati dal JSON (se presenti), incluse le variabili dinamiche.
         """
         vin = self.data.get('data', {}).get('Vin loop', None)
         if isinstance(vin, list):
@@ -808,6 +898,17 @@ class EffFileDialog(QDialog):
             self.iout_start_edit.setText(str(iout.get('start', '')))
             self.iout_stop_edit.setText(str(iout.get('stop', '')))
             self.iout_points_spin.setValue(int(iout.get('points', 5)))
+        # Seleziona le variabili se presenti nel JSON
+        sweep_var = self.data.get('sweep_variable', None)
+        measured_var = self.data.get('measured_variable', None)
+        if hasattr(self, 'sweep_var_combo') and sweep_var:
+            idx = self.sweep_var_combo.findData(sweep_var)
+            if idx >= 0:
+                self.sweep_var_combo.setCurrentIndex(idx)
+        if hasattr(self, 'measured_var_combo') and measured_var:
+            idx = self.measured_var_combo.findData(measured_var)
+            if idx >= 0:
+                self.measured_var_combo.setCurrentIndex(idx)
 
     def apply_params_to_json(self):
         """
@@ -857,11 +958,14 @@ class EffFileDialog(QDialog):
 
     def save_changes(self):
         """
-        Salva i dati modificati nel file .eff.
+        Salva i dati modificati nel file .eff, includendo le variabili sweep e misura selezionate.
         Mostra un messaggio di errore se il salvataggio fallisce.
         """
         try:
             data = json.loads(self.data_edit.toPlainText())
+            # Salva le variabili selezionate
+            data['sweep_variable'] = self.sweep_var_combo.currentData()
+            data['measured_variable'] = self.measured_var_combo.currentData()
             with open(self.file_path, 'w', encoding='utf-8') as f:
                 json.dump(data, f, indent=2)
             self.accept()
@@ -965,6 +1069,17 @@ class WasFileDialog(QDialog):
             self.time_div_edit.setText(str(tdiv))
         if vdiv:
             self.volt_div_edit.setText(str(vdiv))
+        # Seleziona le variabili se presenti nel JSON
+        sweep_var = self.data.get('sweep_variable', None)
+        measured_var = self.data.get('measured_variable', None)
+        if hasattr(self, 'sweep_var_combo') and sweep_var:
+            idx = self.sweep_var_combo.findData(sweep_var)
+            if idx >= 0:
+                self.sweep_var_combo.setCurrentIndex(idx)
+        if hasattr(self, 'measured_var_combo') and measured_var:
+            idx = self.measured_var_combo.findData(measured_var)
+            if idx >= 0:
+                self.measured_var_combo.setCurrentIndex(idx)
 
     def apply_params_to_json(self):
         """
@@ -1165,41 +1280,94 @@ class InstFileDialog(QDialog):
             self.visa_address_label.setStyleSheet('background:#eee; border:1px solid #ccc; padding:2px;')
 
     def update_channels_widget(self):
+        """
+        Aggiorna la lista dei canali visualizzati nella GUI per lo strumento selezionato.
+        - Per strumenti di set (es. alimentatori, carichi elettronici):
+          mostra un QLineEdit per ogni canale, dove l'utente può inserire il nome della variabile (es. VIN, VOUT, ecc.).
+        - Per strumenti di misura (datalogger, multimetri):
+          mostra un QComboBox per ogni canale, dove l'utente può selezionare quale variabile misurare (tra quelle già definite negli strumenti di set)
+        - Per oscilloscopi: (placeholder, da implementare se necessario)
+        """
+        from PyQt5.QtWidgets import QWidget, QHBoxLayout, QLabel, QLineEdit, QComboBox
+        # Svuota la lista dei canali ogni volta che si cambia modello/strumento
         self.channels_widget.clear()
         model = self.model_combo.currentData()
         type_key = self.type_combo.currentData()
         if not model:
             return
-        if type_key == 'power_supplies':
-            channels = model.get('capabilities', {}).get('channels', [])
+        # Recupera i canali dal modello selezionato (es. [{'id': 1, 'name': 'CH1'}, ...])
+        channels = model.get('capabilities', {}).get('channels', [])
+        # --- Per strumenti di set (alimentatori, carichi elettronici) ---
+        if type_key in ['power_supplies', 'electronic_loads']:
+            # Ciclo su tutti i canali definiti dal modello selezionato
             for ch in channels:
-                self.channels_widget.addItem(f"{ch.get('label','')} [{ch.get('channel_id','')}] (nome canale personalizzabile)")
-        elif type_key == 'dataloggers':
-            n = model.get('capabilities', {}).get('channels', 0)
-            for i in range(1, n+1):
-                self.channels_widget.addItem(f"Segnale {i} (numero canale personalizzabile)")
-        elif type_key == 'oscilloscopes':
-            channels = model.get('capabilities', {}).get('channels', [])
+                # Ottieni il nome del canale (es. "CH1"), se non presente usa l'id
+                ch_name = ch.get('name', f"CH{ch.get('id', '')}")
+                # Crea un widget contenitore per la riga del canale
+                item_widget = QWidget()  # Ogni riga è un QWidget custom
+                layout = QHBoxLayout()   # Layout orizzontale per etichetta e campo input
+                layout.setContentsMargins(0,0,0,0)  # Nessun margine per compattezza
+                # Etichetta con il nome del canale (es. "CH1 →")
+                label = QLabel(f"{ch_name} →")
+                # Campo input per il nome variabile associato a questo canale (es. VIN, VOUT)
+                var_edit = QLineEdit()
+                var_edit.setPlaceholderText(self.translator.t('variable_name_placeholder'))  # Placeholder localizzato
+                # Aggiungi etichetta e campo input al layout
+                layout.addWidget(label)
+                layout.addWidget(var_edit)
+                # Imposta il layout al widget riga
+                item_widget.setLayout(layout)
+                # Salva riferimenti utili per recuperare i dati quando si salva lo strumento
+                item_widget.var_edit = var_edit  # Campo input variabile
+                item_widget.ch_id = ch.get('id') # ID canale
+                # Aggiungi una riga vuota alla QListWidget (serve per poter inserire il widget custom)
+                self.channels_widget.addItem("")
+                # Sostituisci la riga con il widget custom
+                self.channels_widget.setItemWidget(self.channels_widget.item(self.channels_widget.count()-1), item_widget)
+        # --- Per strumenti di misura (datalogger, multimetri) ---
+        elif type_key in ['dataloggers']:
+            # Recupera tutte le variabili già definite negli strumenti di set (alimentatori, carichi)
+            defined_vars = set()
+            for inst in self.inst_data.get('instruments', []):
+                if inst.get('type') in ['power_supplies', 'electronic_loads']:
+                    for ch in inst.get('channels', []):
+                        var = ch.get('variable')
+                        if var:
+                            defined_vars.add(var)
+            defined_vars = sorted(list(defined_vars))  # Ordina per presentazione
+            # Ciclo su tutti i canali del datalogger
             for ch in channels:
-                self.channels_widget.addItem(f"{ch.get('label','')} [{ch.get('channel_id','')}] (nome segnale personalizzabile)")
-        elif type_key == 'electronic_loads':
-            # Mostra slot o canali se presenti
-            channels = model.get('capabilities', {}).get('channels', [])
-            if channels:
-                for ch in channels:
-                    self.channels_widget.addItem(f"{ch.get('label','')} [{ch.get('channel_id','')}] (nome canale personalizzabile)")
-            else:
-                n_slots = model.get('capabilities', {}).get('number_of_slots', 0)
-                for i in range(1, n_slots+1):
-                    self.channels_widget.addItem(f"Slot {i} (slot personalizzabile)")
-
-    def open_visa_address_dialog(self):
-        conn_type = self.connection_type_combo.currentData()
-        dlg = VisaAddressDialog(self, self.translator, conn_type)
-        if dlg.exec_() == QDialog.Accepted:
-            self.visa_address_label.setText(dlg.address)
+                ch_name = ch.get('name', f"CH{ch.get('id', '')}")
+                item_widget = QWidget()  # Widget riga
+                layout = QHBoxLayout()
+                layout.setContentsMargins(0,0,0,0)
+                # Etichetta canale (es. "CH1 →")
+                label = QLabel(f"{ch_name} →")
+                # Menu a tendina con tutte le variabili definite (es. VIN, VOUT)
+                var_combo = QComboBox()
+                var_combo.addItems(defined_vars)
+                # Aggiungi etichetta e combo al layout
+                layout.addWidget(label)
+                layout.addWidget(var_combo)
+                item_widget.setLayout(layout)
+                # Salva riferimenti utili
+                item_widget.var_combo = var_combo
+                item_widget.ch_id = ch.get('id')
+                # Aggiungi riga vuota e sostituisci con widget custom
+                self.channels_widget.addItem("")
+                self.channels_widget.setItemWidget(self.channels_widget.item(self.channels_widget.count()-1), item_widget)
+        # --- Placeholder per oscilloscopi ---
+        elif type_key in ['oscilloscopes']:
+            # Da implementare se necessario
+            pass
 
     def add_instrument_to_inst(self):
+        """
+        Aggiunge lo strumento configurato alla lista degli strumenti nel file .inst.
+        - Recupera tutte le informazioni dal form, inclusi i canali e le variabili associate.
+        - Per strumenti di set: salva per ogni canale il nome variabile scelto.
+        - Per strumenti di misura: salva per ogni canale la variabile selezionata da misurare.
+        """
         type_key = self.type_combo.currentData()
         serie = self.series_combo.currentData()
         model = self.model_combo.currentData()
@@ -1207,40 +1375,36 @@ class InstFileDialog(QDialog):
             return
         instance_name = self.instance_name_edit.text().strip()
         if not instance_name:
-            from PyQt5.QtWidgets import QMessageBox
-            QMessageBox.warning(self, 'Errore', 'Inserire un nome istanza')
             return
         conn_type = self.connection_type_combo.currentData()
         visa_addr = self.visa_address_label.text().strip()
         channel_assignments = []
+        # --- Recupera le associazioni canale-variabile dalla GUI ---
         for i in range(self.channels_widget.count()):
-            ch_item = self.channels_widget.item(i).text()
-            from PyQt5.QtWidgets import QInputDialog
-            if type_key == 'dataloggers':
-                signal_name, ok = QInputDialog.getText(self, 'Assegna segnale', f'Nome segnale per {ch_item}:')
-                if not ok:
-                    continue
-                channel_number, ok = QInputDialog.getText(self, 'Numero canale', f'Numero canale per {signal_name}:')
-                if not ok:
-                    continue
-                channel_assignments.append({"signal_name": signal_name, "channel_number": channel_number})
-            else:
-                signal_name, ok = QInputDialog.getText(self, 'Assegna canale', f'Nome segnale/canale per {ch_item}:')
-                if not ok:
-                    continue
-                if '[' in ch_item and ']' in ch_item:
-                    channel_id = ch_item.split('[')[-1].split(']')[0]
-                else:
-                    channel_id = f"CH{i+1}"
-                channel_assignments.append({"channel_name" if type_key=="power_supplies" else "signal_name": signal_name, "channel_id": channel_id})
-        new_instr = {
-            "instance_name": instance_name,
-            "instrument_generic_id": model.get('id'),
-            "actual_connection_type": conn_type['type'] if conn_type else '',
-            "actual_visa_address": visa_addr,
-            "channel_assignments": channel_assignments
+            item = self.channels_widget.item(i)
+            widget = self.channels_widget.itemWidget(item)
+            ch_id = widget.ch_id
+            if type_key in ['power_supplies', 'electronic_loads']:
+                # Per strumenti di set: prendi il nome variabile dal QLineEdit
+                var_name = widget.var_edit.text().strip()
+                channel_assignments.append({'id': ch_id, 'variable': var_name})
+            elif type_key in ['dataloggers']:
+                # Per strumenti di misura: prendi la variabile selezionata dal QComboBox
+                var_name = widget.var_combo.currentText().strip()
+                channel_assignments.append({'id': ch_id, 'measures': var_name})
+        # --- Crea la struttura dello strumento da salvare ---
+        inst_entry = {
+            'type': type_key,  # Tipo strumento (es. power_supplies)
+            'series': serie.get('series_id') if serie else '',  # Serie
+            'model': model.get('id') if model else '',  # Modello
+            'instance_name': instance_name,  # Nome istanza
+            'instrument_generic_id': model.get('generic_id') if model else '',  # ID generico
+            'connection_type': conn_type.get('type') if conn_type else '',  # Tipo connessione
+            'visa_address': visa_addr,  # Indirizzo VISA
+            'channels': channel_assignments  # Lista canali con variabili associate
         }
-        self.inst_data.setdefault('instruments', []).append(new_instr)
+        # Aggiunge lo strumento alla lista nel file .inst
+        self.inst_data.setdefault('instruments', []).append(inst_entry)
         self.refresh_instruments_list()
         self.data_edit.setText(json.dumps(self.inst_data, indent=2))
         self.save_changes(auto=True)
@@ -1260,96 +1424,31 @@ class InstFileDialog(QDialog):
             from PyQt5.QtWidgets import QMessageBox
             QMessageBox.warning(self, self.translator.t('error'), str(e))
 
-class VisaAddressDialog(QDialog):
-    """
-    Dialog per la composizione parametrica dell'indirizzo VISA.
-    Mostra i campi necessari in base al tipo di interfaccia selezionato.
-    """
-    def __init__(self, parent, translator, conn_type):
-        super().__init__(parent)
-        self.translator = translator
-        self.conn_type = conn_type  # dict con info tipo connessione
-        self.setWindowTitle(self.translator.t('compose_visa_address'))
-        self.setModal(True)
-        self.address = ''
+    def open_visa_address_dialog(self):
+        """
+        Apre una finestra di dialogo per comporre l'indirizzo VISA in base al tipo di connessione selezionato.
+        L'indirizzo risultante viene mostrato nella label visa_address_label.
+        """
+        from PyQt5.QtWidgets import QDialog, QVBoxLayout, QLabel, QLineEdit, QPushButton
+        dialog = QDialog(self)
+        dialog.setWindowTitle(self.translator.t('compose_visa_address'))
         layout = QVBoxLayout()
-        self.fields = {}
-        form = QFormLayout()
-        t = conn_type['type'].lower() if conn_type else ''
-        # LXI (TCP/IP)
-        if t in ['lxi', 'tcpip', 'ethernet']:
-            self.ip_edit = QLineEdit()
-            self.port_edit = QLineEdit()
-            self.port_edit.setText('5025')
-            form.addRow(self.translator.t('ip_address'), self.ip_edit)
-            form.addRow(self.translator.t('port'), self.port_edit)
-            self.fields = {'ip': self.ip_edit, 'port': self.port_edit}
-        # GPIB
-        elif t == 'gpib':
-            self.gpib_board = QLineEdit()
-            self.gpib_board.setText('0')
-            self.gpib_addr = QLineEdit()
-            form.addRow(self.translator.t('gpib_board'), self.gpib_board)
-            form.addRow(self.translator.t('gpib_address'), self.gpib_addr)
-            self.fields = {'board': self.gpib_board, 'address': self.gpib_addr}
-        # USB
-        elif t == 'usb':
-            self.usb_serial = QLineEdit()
-            form.addRow(self.translator.t('usb_serial'), self.usb_serial)
-            self.fields = {'serial': self.usb_serial}
-        # RS232
-        elif t in ['rs232', 'serial']:
-            self.com_port = QLineEdit()
-            self.baudrate = QLineEdit()
-            self.baudrate.setText('9600')
-            form.addRow(self.translator.t('com_port'), self.com_port)
-            form.addRow(self.translator.t('baudrate'), self.baudrate)
-            self.fields = {'com': self.com_port, 'baud': self.baudrate}
-        # Altro
-        else:
-            self.generic = QLineEdit()
-            form.addRow(self.translator.t('visa_address'), self.generic)
-            self.fields = {'address': self.generic}
-        layout.addLayout(form)
-        # Pulsante verifica
-        btn_row = QHBoxLayout()
-        self.check_btn = QPushButton(self.translator.t('check_connection'))
-        self.check_btn.clicked.connect(self.check_connection)
-        btn_row.addWidget(self.check_btn)
-        self.ok_btn = QPushButton(self.translator.t('ok'))
-        self.ok_btn.clicked.connect(self.accept)
-        btn_row.addWidget(self.ok_btn)
-        layout.addLayout(btn_row)
-        self.setLayout(layout)
-    def compose_address(self):
-        t = self.conn_type['type'].lower() if self.conn_type else ''
-        if t in ['lxi', 'tcpip', 'ethernet']:
-            ip = self.fields['ip'].text().strip()
-            port = self.fields['port'].text().strip()
-            return f"TCPIP::{ip}::{port}::SOCKET"
-        elif t == 'gpib':
-            board = self.fields['board'].text().strip()
-            addr = self.fields['address'].text().strip()
-            return f"GPIB{board}::{addr}::INSTR"
-        elif t == 'usb':
-            serial = self.fields['serial'].text().strip()
-            return f"USB::{serial}::INSTR"
-        elif t in ['rs232', 'serial']:
-            com = self.fields['com'].text().strip()
-            baud = self.fields['baud'].text().strip()
-            return f"ASRL{com}::INSTR (baudrate {baud})"
-        else:
-            return self.fields['address'].text().strip()
-    def check_connection(self):
-        # Mock: validazione sintattica base
-        addr = self.compose_address()
-        if not addr or '::' not in addr:
-            QMessageBox.warning(self, self.translator.t('error'), self.translator.t('invalid_address'))
-            return
-        QMessageBox.information(self, self.translator.t('check_connection'), self.translator.t('address_valid'))
-    def accept(self):
-        self.address = self.compose_address()
-        super().accept()
+        # Ottieni il tipo di connessione selezionato
+        conn_type = self.connection_type_combo.currentText()
+        # Campo per l'indirizzo base
+        address_edit = QLineEdit()
+        address_edit.setPlaceholderText(self.translator.t('visa_address_placeholder'))
+        layout.addWidget(QLabel(self.translator.t('connection_type') + f': {conn_type}'))
+        layout.addWidget(address_edit)
+        # Pulsante per confermare
+        ok_btn = QPushButton(self.translator.t('ok'))
+        ok_btn.clicked.connect(dialog.accept)
+        layout.addWidget(ok_btn)
+        dialog.setLayout(layout)
+        if dialog.exec_() == QDialog.Accepted:
+            # Aggiorna la label con l'indirizzo inserito
+            self.visa_address_label.setText(address_edit.text())
+        # Puoi estendere questa logica per validare o comporre l'indirizzo in base al tipo di connessione
 
 if __name__ == '__main__':
     """
