@@ -3,10 +3,10 @@ import os
 import json
 import webbrowser
 from PyQt5.QtWidgets import (
-    QApplication, QMainWindow, QTabWidget, QWidget, QVBoxLayout, QLabel, QAction, QDialog, QPushButton, QHBoxLayout, QComboBox, QCheckBox, QFileDialog, QListWidget, QListWidgetItem, QSplitter, QRadioButton, QButtonGroup, QSpinBox, QGroupBox, QFormLayout, QTextEdit
+    QApplication, QMainWindow, QTabWidget, QWidget, QVBoxLayout, QLabel, QAction, QDialog, QPushButton, QHBoxLayout, QComboBox, QCheckBox, QFileDialog, QListWidget, QListWidgetItem, QSplitter, QRadioButton, QButtonGroup, QSpinBox, QGroupBox, QFormLayout, QTextEdit, QSizePolicy, QInputDialog, QLineEdit
 )
 from PyQt5.QtCore import Qt, QSettings
-from PyQt5.QtWidgets import QDialog, QVBoxLayout, QFormLayout, QLineEdit, QPushButton, QLabel, QComboBox, QMessageBox, QHBoxLayout
+import uuid
 
 class Translator:
     """
@@ -307,6 +307,11 @@ class MainWindow(QMainWindow):
         info_action = QAction(self.translator.t('about_software'), self)
         info_action.triggered.connect(self.show_software_info)
         help_menu.addAction(info_action)
+        # Tools menu
+        tools_menu = menubar.addMenu(self.translator.t('tools') if hasattr(self.translator, 't') else 'Tools')
+        manage_lib_action = QAction(self.translator.t('manage_instrument_library') if hasattr(self.translator, 't') else 'Gestisci libreria strumenti', self)
+        manage_lib_action.triggered.connect(self.open_instrument_library_dialog)
+        tools_menu.addAction(manage_lib_action)
 
     def show_software_info(self):
         """
@@ -570,6 +575,13 @@ class MainWindow(QMainWindow):
             dlg = InstFileDialog(file_path, self.translator, self)
             dlg.exec_()
         # (Other types can be added in the future)
+
+    def open_instrument_library_dialog(self):
+        """
+        Open the instrument library manager dialog.
+        """
+        dlg = InstrumentLibraryDialog(self, self.translator)
+        dlg.exec_()
 
 class DatabaseDialog(QDialog):
     """
@@ -1108,13 +1120,12 @@ class WasFileDialog(QDialog):
 
     def save_changes(self):
         """
-        Salva i dati modificati nel file .was.
+        Salva i dati attuali nel file .was e chiude la dialog.
         Mostra un messaggio di errore se il salvataggio fallisce.
         """
         try:
-            data = json.loads(self.data_edit.toPlainText())
             with open(self.file_path, 'w', encoding='utf-8') as f:
-                json.dump(data, f, indent=2)
+                json.dump(self.data, f, indent=2)
             self.accept()
         except Exception as e:
             from PyQt5.QtWidgets import QMessageBox
@@ -1148,14 +1159,19 @@ class InstFileDialog(QDialog):
             self.inst_data = {"instruments": []}
         # Carica libreria strumenti
         self.instrument_library = self.load_instrument_library()
+        # Editor JSON raw (opzionale, solo per debug)
+        self.data_edit = QTextEdit()
+        self.data_edit.setText(json.dumps(self.inst_data, indent=2))
         # Lista strumenti già aggiunti
         layout.addWidget(QLabel(self.translator.t('added_instruments') if hasattr(self.translator, 't') else 'Strumenti aggiunti'))
         self.instruments_list_widget = QListWidget()
-        self.refresh_instruments_list()
         layout.addWidget(self.instruments_list_widget)
+        self.refresh_instruments_list()
         remove_btn = QPushButton(self.translator.t('remove_selected') if hasattr(self.translator, 't') else 'Rimuovi selezionato')
         remove_btn.clicked.connect(self.remove_selected_instrument)
         layout.addWidget(remove_btn)
+        # Permetti doppio click per editare canali
+        self.instruments_list_widget.itemDoubleClicked.connect(self.edit_instrument_channels)
         # --- Form per aggiunta nuovo strumento ---
         layout.addWidget(QLabel(self.translator.t('add_new_instrument') if hasattr(self.translator, 't') else 'Aggiungi nuovo strumento'))
         form = QFormLayout()
@@ -1185,9 +1201,24 @@ class InstFileDialog(QDialog):
         self.visa_address_label.setStyleSheet('background:#eee; border:1px solid #ccc; padding:2px;')
         form.addRow(self.translator.t('visa_address'), self.visa_address_btn)
         form.addRow(self.translator.t('composed_address'), self.visa_address_label)
-        # Canali
+        # Canali: layout verticale con pulsanti e lista scrollabile
+        channel_box = QVBoxLayout()
+        btn_row = QHBoxLayout()
+        self.enable_all_btn = QPushButton(self.translator.t('enable_all') if hasattr(self.translator, 't') else 'Attiva tutti')
+        self.disable_all_btn = QPushButton(self.translator.t('disable_all') if hasattr(self.translator, 't') else 'Disattiva tutti')
+        self.enable_all_btn.clicked.connect(self.enable_all_channels)
+        self.disable_all_btn.clicked.connect(self.disable_all_channels)
+        btn_row.addWidget(self.enable_all_btn)
+        btn_row.addWidget(self.disable_all_btn)
+        channel_box.addLayout(btn_row)
+        # Lista canali scrollabile
         self.channels_widget = QListWidget()
-        form.addRow(self.translator.t('channel_assignments') if hasattr(self.translator, 't') else 'Assegnazione canali', self.channels_widget)
+        self.channels_widget.setMinimumHeight(120)
+        self.channels_widget.setMaximumHeight(200)
+        self.channels_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        channel_box.addWidget(self.channels_widget)
+        form.addRow(self.translator.t('channel_assignments') if hasattr(self.translator, 't') else 'Assegnazione canali', QWidget())
+        form.itemAt(form.rowCount()-1, QFormLayout.FieldRole).widget().setLayout(channel_box)
         self.model_combo.currentIndexChanged.connect(self.update_channels_widget)
         layout.addLayout(form)
         add_btn = QPushButton(self.translator.t('add_instrument') if hasattr(self.translator, 't') else 'Aggiungi strumento')
@@ -1205,256 +1236,446 @@ class InstFileDialog(QDialog):
         self.setLayout(layout)
         self.update_series_combo()
 
-    def load_instrument_library(self):
-        lib_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'Instruments_LIB', 'instruments_lib.json')
-        try:
-            with open(lib_path, 'r', encoding='utf-8') as f:
-                return json.load(f)['instrument_library']
-        except Exception:
-            return {}
+    def enable_all_channels(self):
+        """
+        Abilita tutti i canali nella lista canali.
+        """
+        for i in range(self.channels_widget.count()):
+            ch_conf = self.channels_widget.item(i).data(Qt.UserRole)
+            ch_conf['used'] = True
+            # Aggiorna label
+            label = self.channels_widget.item(i).text()
+            if label.startswith('[DIS] '):
+                self.channels_widget.item(i).setText(label[6:])
+        self.channels_widget.repaint()
 
-    def refresh_instruments_list(self):
-        self.instruments_list_widget.clear()
-        for inst in self.inst_data.get('instruments', []):
-            instance_name = inst.get('instance_name', '')
-            generic_id = inst.get('instrument_generic_id', '')
-            # Ricerca tipo, serie, modello dalla libreria aggiornata
-            type_label = series_label = model_label = ''
-            for type_key, (type_label_val, series_key) in self.type_map.items():
-                for serie in self.instrument_library.get(series_key, []):
-                    for model in serie.get('models', []):
-                        if model.get('id') == generic_id:
-                            type_label = type_label_val
-                            series_label = serie.get('series_name', serie.get('series_id', ''))
-                            model_label = model.get('name', model.get('id', ''))
-            label = f"{instance_name} ({type_label}, {series_label}, {model_label})"
-            self.instruments_list_widget.addItem(label)
-
-    def remove_selected_instrument(self):
-        row = self.instruments_list_widget.currentRow()
-        if row >= 0:
-            del self.inst_data['instruments'][row]
-            self.refresh_instruments_list()
-            self.data_edit.setText(json.dumps(self.inst_data, indent=2))
-            self.save_changes(auto=True)
+    def disable_all_channels(self):
+        """
+        Disabilita tutti i canali nella lista canali.
+        """
+        for i in range(self.channels_widget.count()):
+            ch_conf = self.channels_widget.item(i).data(Qt.UserRole)
+            ch_conf['used'] = False
+            # Aggiorna label
+            label = self.channels_widget.item(i).text()
+            if not label.startswith('[DIS] '):
+                self.channels_widget.item(i).setText('[DIS] ' + label)
+        self.channels_widget.repaint()
 
     def update_series_combo(self):
-        self.series_combo.clear()
+        """
+        Aggiorna la combo delle serie in base al tipo selezionato.
+        Gestisce struttura a lista di oggetti (series_id, series_name, models).
+        """
         type_key = self.type_combo.currentData()
-        series_key = self.type_map[type_key][1] if type_key in self.type_map else None
-        series_list = self.instrument_library.get(series_key, []) if series_key else []
-        for serie in series_list:
-            label = serie.get('series_name', serie.get('series_id', ''))
-            self.series_combo.addItem(label, serie)
+        self.series_combo.clear()
+        self._current_series_list = []  # Salva la lista per uso in update_model_combo
+        if not type_key or type_key not in self.type_map:
+            return
+        series_key = self.type_map[type_key][1]  # Usa la chiave corretta per la libreria
+        if series_key not in self.instrument_library:
+            return
+        series_list = self.instrument_library[series_key]
+        for s in series_list:
+            label = s.get('series_name', s.get('series_id', str(s)))
+            self.series_combo.addItem(label, s.get('series_id', label))
+        self._current_series_list = series_list
         self.update_model_combo()
 
     def update_model_combo(self):
+        """
+        Aggiorna la combo dei modelli in base alla serie selezionata.
+        Gestisce struttura a lista di oggetti.
+        """
+        type_key = self.type_combo.currentData()
+        series_id = self.series_combo.currentData()
         self.model_combo.clear()
-        serie = self.series_combo.currentData()
-        if not serie:
+        if not type_key or not series_id or not hasattr(self, '_current_series_list'):
             return
-        for model in serie.get('models', []):
-            label = model.get('name', model.get('id', ''))
-            self.model_combo.addItem(label, model)
+        # Trova la serie selezionata
+        series_obj = next((s for s in self._current_series_list if s.get('series_id') == series_id), None)
+        if not series_obj or 'models' not in series_obj:
+            return
+        for m in series_obj['models']:
+            label = m.get('name', m.get('id', str(m)))
+            self.model_combo.addItem(label, m.get('id', label))
+        self._current_model_list = series_obj['models']
         self.update_connection_types()
-        self.update_channels_widget()
 
     def update_connection_types(self):
+        """
+        Aggiorna la combo dei tipi di connessione in base al modello selezionato.
+        """
+        type_key = self.type_combo.currentData()
+        series_id = self.series_combo.currentData()
+        model_id = self.model_combo.currentData()
         self.connection_type_combo.clear()
-        model = self.model_combo.currentData()
-        if not model:
+        if not type_key or not series_id or not model_id or not hasattr(self, '_current_model_list'):
             return
-        conn_types = model.get('interface', {}).get('supported_connection_types', [])
-        for c in conn_types:
-            self.connection_type_combo.addItem(c['type'], c)
-        if conn_types:
-            self.visa_address_btn.setEnabled(True)
-            self.visa_address_label.setEnabled(True)
-            self.visa_address_btn.setText(self.translator.t('compose_visa_address'))
-            self.visa_address_label.setText('')
-            self.visa_address_label.setStyleSheet('background:#fff; border:1px solid #ccc; padding:2px;')
-        else:
-            self.visa_address_btn.setEnabled(False)
-            self.visa_address_label.setEnabled(False)
-            self.visa_address_label.setText('N/A')
-            self.visa_address_label.setStyleSheet('background:#eee; border:1px solid #ccc; padding:2px;')
+        # Trova il modello selezionato
+        model_obj = next((m for m in self._current_model_list if m.get('id') == model_id), None)
+        if not model_obj or 'interface' not in model_obj:
+            return
+        conn_types = model_obj['interface'].get('supported_connection_types', [])
+        for conn in conn_types:
+            label = conn.get('type', conn.get('address_format_example', str(conn)))
+            self.connection_type_combo.addItem(label, label)
+        self.update_channels_widget()
 
     def update_channels_widget(self):
         """
-        Aggiorna la lista dei canali visualizzati nella GUI per lo strumento selezionato.
-        - Per strumenti di set (es. alimentatori, carichi elettronici):
-          mostra un QLineEdit per ogni canale, dove l'utente può inserire il nome della variabile (es. VIN, VOUT, ecc.).
-        - Per strumenti di misura (datalogger, multimetri):
-          mostra un QComboBox per ogni canale, dove l'utente può selezionare quale variabile misurare (tra quelle già definite negli strumenti di set)
-        - Per oscilloscopi: (placeholder, da implementare se necessario)
+        Aggiorna la visualizzazione dei canali per il modello selezionato.
+        Mostra solo i canali usati e precompila i campi se già configurati.
+        Di default tutti i canali sono disattivati (used: False).
         """
-        from PyQt5.QtWidgets import QWidget, QHBoxLayout, QLabel, QLineEdit, QComboBox
-        # Svuota la lista dei canali ogni volta che si cambia modello/strumento
         self.channels_widget.clear()
-        model = self.model_combo.currentData()
         type_key = self.type_combo.currentData()
-        if not model:
+        series_id = self.series_combo.currentData()
+        model_id = self.model_combo.currentData()
+        if not type_key or not series_id or not model_id or not hasattr(self, '_current_model_list'):
             return
-        # Recupera i canali dal modello selezionato (es. [{'id': 1, 'name': 'CH1'}, ...])
-        channels = model.get('capabilities', {}).get('channels', [])
-        # --- Per strumenti di set (alimentatori, carichi elettronici) ---
-        if type_key in ['power_supplies', 'electronic_loads']:
-            # Ciclo su tutti i canali definiti dal modello selezionato
-            for ch in channels:
-                # Ottieni il nome del canale (es. "CH1"), se non presente usa l'id
-                ch_name = ch.get('name', f"CH{ch.get('id', '')}")
-                # Crea un widget contenitore per la riga del canale
-                item_widget = QWidget()  # Ogni riga è un QWidget custom
-                layout = QHBoxLayout()   # Layout orizzontale per etichetta e campo input
-                layout.setContentsMargins(0,0,0,0)  # Nessun margine per compattezza
-                # Etichetta con il nome del canale (es. "CH1 →")
-                label = QLabel(f"{ch_name} →")
-                # Campo input per il nome variabile associato a questo canale (es. VIN, VOUT)
-                var_edit = QLineEdit()
-                var_edit.setPlaceholderText(self.translator.t('variable_name_placeholder'))  # Placeholder localizzato
-                # Aggiungi etichetta e campo input al layout
-                layout.addWidget(label)
-                layout.addWidget(var_edit)
-                # Imposta il layout al widget riga
-                item_widget.setLayout(layout)
-                # Salva riferimenti utili per recuperare i dati quando si salva lo strumento
-                item_widget.var_edit = var_edit  # Campo input variabile
-                item_widget.ch_id = ch.get('id') # ID canale
-                # Aggiungi una riga vuota alla QListWidget (serve per poter inserire il widget custom)
-                self.channels_widget.addItem("")
-                # Sostituisci la riga con il widget custom
-                self.channels_widget.setItemWidget(self.channels_widget.item(self.channels_widget.count()-1), item_widget)
-        # --- Per strumenti di misura (datalogger, multimetri) ---
-        elif type_key in ['dataloggers']:
-            # Recupera tutte le variabili già definite negli strumenti di set (alimentatori, carichi)
-            defined_vars = set()
-            for inst in self.inst_data.get('instruments', []):
-                if inst.get('type') in ['power_supplies', 'electronic_loads']:
-                    for ch in inst.get('channels', []):
-                        var = ch.get('variable')
-                        if var:
-                            defined_vars.add(var)
-            defined_vars = sorted(list(defined_vars))  # Ordina per presentazione
-            # Ciclo su tutti i canali del datalogger
-            for ch in channels:
-                ch_name = ch.get('name', f"CH{ch.get('id', '')}")
-                item_widget = QWidget()  # Widget riga
-                layout = QHBoxLayout()
-                layout.setContentsMargins(0,0,0,0)
-                # Etichetta canale (es. "CH1 →")
-                label = QLabel(f"{ch_name} →")
-                # Menu a tendina con tutte le variabili definite (es. VIN, VOUT)
-                var_combo = QComboBox()
-                var_combo.addItems(defined_vars)
-                # Aggiungi etichetta e combo al layout
-                layout.addWidget(label)
-                layout.addWidget(var_combo)
-                item_widget.setLayout(layout)
-                # Salva riferimenti utili
-                item_widget.var_combo = var_combo
-                item_widget.ch_id = ch.get('id')
-                # Aggiungi riga vuota e sostituisci con widget custom
-                self.channels_widget.addItem("")
-                self.channels_widget.setItemWidget(self.channels_widget.item(self.channels_widget.count()-1), item_widget)
-        # --- Placeholder per oscilloscopi ---
-        elif type_key in ['oscilloscopes']:
-            # Da implementare se necessario
-            pass
+        # Trova il modello selezionato
+        model_obj = next((m for m in self._current_model_list if m.get('id') == model_id), None)
+        n_channels = 0
+        channel_labels = []
+        if model_obj:
+            caps = model_obj.get('capabilities', {})
+            # Caso 1: lista di oggetti canale
+            if 'channels' in caps and isinstance(caps['channels'], list):
+                n_channels = len(caps['channels'])
+                channel_labels = [ch.get('label', f"Ch{i+1}") for i, ch in enumerate(caps['channels'])]
+            # Caso 2: channels è un intero (datalogger)
+            elif 'channels' in caps and isinstance(caps['channels'], int):
+                n_channels = caps['channels']
+                channel_labels = [f"Ch{i+1}" for i in range(n_channels)]
+            elif 'number_of_channels' in caps:
+                n_channels = caps['number_of_channels']
+                channel_labels = [f"Ch{i+1}" for i in range(n_channels)]
+        # Cerca se esiste già una configurazione per questo strumento
+        instance_name = self.instance_name_edit.text().strip()
+        existing = None
+        for inst in self.inst_data.get('instruments', []):
+            if inst.get('instance_name', '') == instance_name:
+                existing = inst
+                break
+        used_channels = existing.get('channels', []) if existing else []
+        for ch_idx in range(n_channels):
+            # Cerca se già configurato
+            ch_conf = next((c for c in used_channels if c.get('index', -1) == ch_idx), None)
+            if not ch_conf:
+                ch_conf = {'index': ch_idx, 'used': False}  # Di default disattivato
+                if type_key == 'dataloggers':
+                    ch_conf['measured_variable'] = ''
+                    ch_conf['attenuation'] = 1.0
+                    ch_conf['measure_type'] = 'voltage'
+                else:
+                    ch_conf['variable'] = ''
+                    ch_conf['attenuation'] = 1.0
+            label = channel_labels[ch_idx] if ch_idx < len(channel_labels) else f"Ch{ch_idx+1}"
+            if not ch_conf.get('used', False):
+                label = '[DIS] ' + label
+            if type_key == 'dataloggers':
+                label += f" ({ch_conf.get('measured_variable','')})"
+            elif type_key in ['power_supplies', 'electronic_loads']:
+                label += f" ({ch_conf.get('variable','')})"
+            item = QListWidgetItem(label)
+            item.setData(Qt.UserRole, ch_conf)
+            self.channels_widget.addItem(item)
 
     def add_instrument_to_inst(self):
         """
-        Aggiunge lo strumento configurato alla lista degli strumenti nel file .inst.
-        - Recupera tutte le informazioni dal form, inclusi i canali e le variabili associate.
-        - Per strumenti di set: salva per ogni canale il nome variabile scelto.
-        - Per strumenti di misura: salva per ogni canale la variabile selezionata da misurare.
+        Aggiunge o aggiorna uno strumento nella lista, salvando solo i canali usati e tutte le variabili.
         """
-        type_key = self.type_combo.currentData()
-        serie = self.series_combo.currentData()
-        model = self.model_combo.currentData()
-        if not model:
-            return
         instance_name = self.instance_name_edit.text().strip()
-        if not instance_name:
-            return
+        type_key = self.type_combo.currentData()
+        series = self.series_combo.currentData()
+        model = self.model_combo.currentData()
         conn_type = self.connection_type_combo.currentData()
         visa_addr = self.visa_address_label.text().strip()
-        channel_assignments = []
-        # --- Recupera le associazioni canale-variabile dalla GUI ---
+        # Raccogli configurazione canali dalla QListWidget
+        channels = []
         for i in range(self.channels_widget.count()):
-            item = self.channels_widget.item(i)
-            widget = self.channels_widget.itemWidget(item)
-            ch_id = widget.ch_id
-            if type_key in ['power_supplies', 'electronic_loads']:
-                # Per strumenti di set: prendi il nome variabile dal QLineEdit
-                var_name = widget.var_edit.text().strip()
-                channel_assignments.append({'id': ch_id, 'variable': var_name})
-            elif type_key in ['dataloggers']:
-                # Per strumenti di misura: prendi la variabile selezionata dal QComboBox
-                var_name = widget.var_combo.currentText().strip()
-                channel_assignments.append({'id': ch_id, 'measures': var_name})
-        # --- Crea la struttura dello strumento da salvare ---
-        inst_entry = {
-            'type': type_key,  # Tipo strumento (es. power_supplies)
-            'series': serie.get('series_id') if serie else '',  # Serie
-            'model': model.get('id') if model else '',  # Modello
-            'instance_name': instance_name,  # Nome istanza
-            'instrument_generic_id': model.get('generic_id') if model else '',  # ID generico
-            'connection_type': conn_type.get('type') if conn_type else '',  # Tipo connessione
-            'visa_address': visa_addr,  # Indirizzo VISA
-            'channels': channel_assignments  # Lista canali con variabili associate
-        }
-        # Aggiunge lo strumento alla lista nel file .inst
-        self.inst_data.setdefault('instruments', []).append(inst_entry)
+            ch_conf = self.channels_widget.item(i).data(Qt.UserRole)
+            # Salva solo se usato
+            if ch_conf.get('used', True):
+                channels.append(ch_conf)
+        # Aggiorna o aggiungi
+        found = False
+        for inst in self.inst_data['instruments']:
+            if inst.get('instance_name','') == instance_name:
+                inst.update({
+                    'instrument_type': type_key,
+                    'series': series,
+                    'model': model,
+                    'connection_type': conn_type,
+                    'visa_address': visa_addr,
+                    'channels': channels
+                })
+                found = True
+                break
+        if not found:
+            self.inst_data['instruments'].append({
+                'instance_name': instance_name,
+                'instrument_type': type_key,
+                'series': series,
+                'model': model,
+                'connection_type': conn_type,
+                'visa_address': visa_addr,
+                'channels': channels
+            })
         self.refresh_instruments_list()
-        self.data_edit.setText(json.dumps(self.inst_data, indent=2))
-        self.save_changes(auto=True)
+        self.save_inst_file()
+        self.update_channels_widget()
 
-    def save_changes(self, auto=False):
+    def edit_instrument_channels(self, item):
+        """
+        Apre la ChannelConfigDialog per modificare i canali dello strumento selezionato.
+        """
+        inst = item.data(Qt.UserRole)
+        dlg = ChannelConfigDialog(inst, self.translator, self)
+        if dlg.exec_() == QDialog.Accepted:
+            # Aggiorna i canali modificati
+            inst['channels'] = dlg.get_channels()
+            self.refresh_instruments_list()
+            self.save_inst_file()
+
+    def open_visa_address_dialog(self):
+        """
+        Dialog per comporre l'indirizzo VISA (placeholder, da implementare secondo necessità).
+        """
+        from PyQt5.QtWidgets import QInputDialog
+        addr, ok = QInputDialog.getText(self, self.translator.t('compose_visa_address'), self.translator.t('enter_visa_address'))
+        if ok:
+            self.visa_address_label.setText(addr)
+
+    def save_changes(self):
+        """
+        Salva i dati attuali nel file .inst e chiude la dialog.
+        Mostra un messaggio di errore se il salvataggio fallisce.
+        """
         try:
-            if auto:
-                data = self.inst_data
-            else:
-                data = json.loads(self.data_edit.toPlainText())
-                self.inst_data = data
             with open(self.file_path, 'w', encoding='utf-8') as f:
-                json.dump(data, f, indent=2)
-            if not auto:
-                self.accept()
+                json.dump(self.inst_data, f, indent=2)
+            self.accept()
         except Exception as e:
             from PyQt5.QtWidgets import QMessageBox
             QMessageBox.warning(self, self.translator.t('error'), str(e))
 
-    def open_visa_address_dialog(self):
+    def load_instrument_library(self):
         """
-        Apre una finestra di dialogo per comporre l'indirizzo VISA in base al tipo di connessione selezionato.
-        L'indirizzo risultante viene mostrato nella label visa_address_label.
+        Carica la libreria strumenti da Instruments_LIB/instruments_lib.json.
+        Gestisce sia la chiave 'instrument_library' sia struttura piatta. Restituisce sempre un dict con tutte le chiavi attese.
         """
-        from PyQt5.QtWidgets import QDialog, QVBoxLayout, QLabel, QLineEdit, QPushButton
-        dialog = QDialog(self)
-        dialog.setWindowTitle(self.translator.t('compose_visa_address'))
-        layout = QVBoxLayout()
-        # Ottieni il tipo di connessione selezionato
-        conn_type = self.connection_type_combo.currentText()
-        # Campo per l'indirizzo base
-        address_edit = QLineEdit()
-        address_edit.setPlaceholderText(self.translator.t('visa_address_placeholder'))
-        layout.addWidget(QLabel(self.translator.t('connection_type') + f': {conn_type}'))
-        layout.addWidget(address_edit)
-        # Pulsante per confermare
-        ok_btn = QPushButton(self.translator.t('ok'))
-        ok_btn.clicked.connect(dialog.accept)
-        layout.addWidget(ok_btn)
-        dialog.setLayout(layout)
-        if dialog.exec_() == QDialog.Accepted:
-            # Aggiorna la label con l'indirizzo inserito
-            self.visa_address_label.setText(address_edit.text())
-        # Puoi estendere questa logica per validare o comporre l'indirizzo in base al tipo di connessione
+        import os, json
+        lib_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'Instruments_LIB', 'instruments_lib.json')
+        try:
+            with open(lib_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            # Se la chiave principale è 'instrument_library', usala
+            if 'instrument_library' in data:
+                data = data['instrument_library']
+            # Assicurati che tutte le chiavi attese siano presenti
+            for k in ['power_supplies_series', 'dataloggers_series', 'oscilloscopes_series', 'electronic_loads_series']:
+                if k not in data:
+                    data[k] = []
+            return data
+        except Exception as e:
+            # In caso di errore, restituisci struttura vuota con tutte le chiavi
+            return {
+                'power_supplies_series': [],
+                'dataloggers_series': [],
+                'oscilloscopes_series': [],
+                'electronic_loads_series': []
+            }
 
-if __name__ == '__main__':
+    def refresh_instruments_list(self):
+        """
+        Aggiorna la QListWidget degli strumenti aggiunti, mostrando nome istanza, tipo, modello e canali abilitati.
+        """
+        self.instruments_list_widget.clear()
+        for inst in self.inst_data.get('instruments', []):
+            instance_name = inst.get('instance_name', '')
+            type_key = inst.get('instrument_type', '')
+            model = inst.get('model', '')
+            channels = inst.get('channels', [])
+            # Mostra solo i canali abilitati
+            enabled_channels = [ch for ch in channels if ch.get('used', True)]
+            ch_descr = ', '.join(
+                ch.get('measured_variable', ch.get('variable', f"Ch{ch.get('index', '?')+1}"))
+                for ch in enabled_channels
+            )
+            label = f"{instance_name} [{type_key}] {model} | Canali: {ch_descr}"
+            item = QListWidgetItem(label)
+            # Salva l'intero dict per doppio click/modifica
+            item.setData(Qt.UserRole, inst)
+            self.instruments_list_widget.addItem(item)
+
+    def remove_selected_instrument(self):
+        """
+        Rimuove lo strumento selezionato dalla lista e aggiorna il file .inst.
+        """
+        selected = self.instruments_list_widget.currentRow()
+        if selected < 0:
+            return
+        # Rimuovi dallo storage
+        if 0 <= selected < len(self.inst_data.get('instruments', [])):
+            del self.inst_data['instruments'][selected]
+            self.refresh_instruments_list()
+            self.save_inst_file()
+
+    def save_inst_file(self):
+        """
+        Salva i dati attuali di self.inst_data nel file .inst associato.
+        Mostra un messaggio di errore se il salvataggio fallisce.
+        """
+        try:
+            with open(self.file_path, 'w', encoding='utf-8') as f:
+                json.dump(self.inst_data, f, indent=2)
+        except Exception as e:
+            from PyQt5.QtWidgets import QMessageBox
+            QMessageBox.warning(self, self.translator.t('error'), f"Errore salvataggio .inst: {e}")
+
+class ChannelConfigDialog(QDialog):
     """
-    Main entry point for the application. Initializes QApplication and shows the main window.
+    Dialog di configurazione avanzata dei canali per uno strumento.
+    Permette di abilitare/disabilitare canali, modificare variabile, attenuazione e tipo misura.
     """
+    def __init__(self, instrument, translator, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(translator.t('channel_config') if hasattr(translator, 't') else 'Configurazione canali')
+        self.instrument = instrument
+        self.translator = translator
+        self.channels = instrument.get('channels', [])
+        self.type_key = instrument.get('instrument_type', '')
+        layout = QVBoxLayout()
+        # Titolo
+        layout.addWidget(QLabel(translator.t('channel_config_title') if hasattr(translator, 't') else 'Configurazione canali'))
+        # Lista canali
+        self.channel_widgets = []  # Per raccogliere i widget di ogni canale
+        for idx, ch in enumerate(self.channels):
+            group = QGroupBox(f"Ch{idx+1}")
+            form = QFormLayout()
+            # Abilitazione canale
+            used_cb = QCheckBox(translator.t('channel_used') if hasattr(translator, 't') else 'Usa questo canale')
+            used_cb.setChecked(ch.get('used', True))
+            form.addRow(used_cb)
+            # Variabile associata
+            if self.type_key == 'dataloggers':
+                var_label = translator.t('measured_variable') if hasattr(translator, 't') else 'Variabile misurata'
+                var_edit = QLineEdit(ch.get('measured_variable', ''))
+            else:
+                var_label = translator.t('variable') if hasattr(translator, 't') else 'Variabile'
+                var_edit = QLineEdit(ch.get('variable', ''))
+            form.addRow(var_label, var_edit)
+            # Attenuazione (solo se presente)
+            att_label = translator.t('attenuation') if hasattr(translator, 't') else 'Attenuazione'
+            att_edit = QLineEdit(str(ch.get('attenuation', '1')))
+            form.addRow(att_label, att_edit)
+            # Tipo misura (solo per datalogger)
+            if self.type_key == 'dataloggers':
+                mt_label = translator.t('measure_type') if hasattr(translator, 't') else 'Tipo misura'
+                mt_combo = QComboBox()
+                mt_combo.addItems(['voltage', 'current', 'temperature', 'resistance'])
+                mt_combo.setCurrentText(ch.get('measure_type', 'voltage'))
+                form.addRow(mt_label, mt_combo)
+            else:
+                mt_combo = None
+            group.setLayout(form)
+            layout.addWidget(group)
+            # Salva riferimenti per raccolta dati
+            self.channel_widgets.append({
+                'used': used_cb,
+                'variable': var_edit,
+                'attenuation': att_edit,
+                'measure_type': mt_combo
+            })
+        # Pulsanti OK/Annulla
+        btn_layout = QHBoxLayout()
+        ok_btn = QPushButton(translator.t('ok') if hasattr(translator, 't') else 'OK')
+        cancel_btn = QPushButton(translator.t('cancel') if hasattr(translator, 't') else 'Annulla')
+        ok_btn.clicked.connect(self.accept)
+        cancel_btn.clicked.connect(self.reject)
+        btn_layout.addWidget(ok_btn)
+        btn_layout.addWidget(cancel_btn)
+        layout.addLayout(btn_layout)
+        self.setLayout(layout)
+
+    def get_channels(self):
+        """
+        Restituisce la lista aggiornata dei canali con i dati inseriti dall'utente.
+        """
+        new_channels = []
+        for idx, widgets in enumerate(self.channel_widgets):
+            used = widgets['used'].isChecked()
+            if not used:
+                continue  # Salva solo canali abilitati
+            ch = {'index': idx, 'used': True}
+            var_val = widgets['variable'].text().strip()
+            if self.type_key == 'dataloggers':
+                ch['measured_variable'] = var_val
+                mt_combo = widgets['measure_type']
+                if mt_combo:
+                    ch['measure_type'] = mt_combo.currentText()
+            else:
+                ch['variable'] = var_val
+            # Attenuazione
+            try:
+                ch['attenuation'] = float(widgets['attenuation'].text().replace(',', '.'))
+            except Exception:
+                ch['attenuation'] = 1.0
+            new_channels.append(ch)
+        return new_channels
+
+class InstrumentLibraryDialog(QDialog):
+    """
+    Dialog per la visualizzazione (sola lettura) della libreria strumenti.
+    """
+    def __init__(self, parent=None, translator=None):
+        super().__init__(parent)
+        self.translator = translator
+        self.setWindowTitle(self.translator.t('instrument_library') if hasattr(self.translator, 't') else 'Libreria strumenti')
+        self.setModal(True)
+        layout = QVBoxLayout()
+        # Carica la libreria strumenti
+        lib_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'Instruments_LIB', 'instruments_lib.json')
+        try:
+            with open(lib_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            if 'instrument_library' in data:
+                data = data['instrument_library']
+            text = json.dumps(data, indent=2, ensure_ascii=False)
+        except Exception as e:
+            text = f"Errore nel caricamento della libreria strumenti:\n{e}"
+        edit = QTextEdit()
+        edit.setReadOnly(True)
+        edit.setText(text)
+        layout.addWidget(edit)
+        close_btn = QPushButton(self.translator.t('close') if hasattr(self.translator, 't') else 'Chiudi')
+        close_btn.clicked.connect(self.accept)
+        layout.addWidget(close_btn)
+        self.setLayout(layout)
+
+def main():
+    """
+    Funzione principale per avviare l'applicazione PyQt5.
+    """
+    import sys
+    from PyQt5.QtWidgets import QApplication
     app = QApplication(sys.argv)
+    # Imposta nome e organizzazione per QSettings
+    app.setOrganizationName('LabAutomation')
+    app.setApplicationName('Open Lab Automation')
+    # Carica lingua da impostazioni
+
+    settings = QSettings('LabAutomation', 'App')
+    lang = settings.value('language', 'it')
+    translator = Translator(default_lang=lang)
     window = MainWindow()
+
+
+
     window.show()
     sys.exit(app.exec_())
+
+if __name__ == "__main__":
+    main()
