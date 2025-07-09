@@ -84,5 +84,8 @@
   "visa_address": "Indirizzo VISA",
   "channel_assignments": "Assegnazione canali",
   "add_instrument": "Aggiungi strumento",
-  "raw_json": "JSON grezzo"
+  "raw_json": "JSON grezzo",
+  "copy_file_name": "Copia nome file",
+  "paste_file": "Incolla file",
+  "delete_file": "Elimina file"
 }

@@ -84,5 +84,8 @@
   "visa_address": "VISA address",
   "channel_assignments": "Channel assignments",
   "add_instrument": "Add instrument",
-  "raw_json": "Raw JSON"
+  "raw_json": "Raw JSON",
+    "copy_file_name": "Copy file name",
+  "paste_file": "Paste file",
+  "delete_file": "Delete file"
 }
