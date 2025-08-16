@@ -5,7 +5,7 @@ from LoadInstruments import LoadInstruments
 import uuid
 import datetime
 from PyQt5.QtWidgets import (
-     QMainWindow, QTabWidget, QApplication ,QWidget, QVBoxLayout, QLabel, QAction, QDialog, QPushButton, QHBoxLayout, QComboBox, QCheckBox, QFileDialog, QListWidget, QListWidgetItem, QSplitter, QRadioButton, QButtonGroup, QSpinBox, QGroupBox, QFormLayout, QTextEdit, QSizePolicy, QInputDialog, QLineEdit, QTableWidget, QTableWidgetItem
+     QMainWindow, QTabWidget, QApplication ,QWidget, QVBoxLayout, QLabel, QAction, QDialog, QPushButton, QHBoxLayout, QComboBox, QCheckBox, QFileDialog, QListWidget, QListWidgetItem, QSplitter, QRadioButton, QButtonGroup, QSpinBox, QGroupBox, QFormLayout, QTextEdit, QSizePolicy, QInputDialog, QLineEdit, QTableWidget, QTableWidgetItem, QMessageBox
 )
 from PyQt5.QtCore import Qt, QSettings, QTimer
 import pyvisa
@@ -31,6 +31,7 @@ class MainWindow(QMainWindow):
         """
         Initialize the main window, load app info, and set up UI components.
         """
+        self.db = None
         # Load app info from JSON
         appinfo_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'appinfo.json')
         with open(appinfo_path, encoding='utf-8') as f:
@@ -517,7 +518,7 @@ class DatabaseDialog(QDialog):
 
     def save_db_settings(self):
         """
-        Save the database settings to QSettings and close the dialog.
+        Save the database settings to QSettings and initialize database connection.
         """
         settings = QSettings('LabAutomation', 'App')
         settings.setValue('db_host', self.host.text())
@@ -525,7 +526,24 @@ class DatabaseDialog(QDialog):
         settings.setValue('db_user', self.user.text())
         settings.setValue('db_password', self.password.text())
         settings.setValue('db_name', self.dbname.text())
-        self.accept()
+
+        # Verifica la connessione al database
+        try:
+            from DatabaseManager import DatabaseManager
+            db = DatabaseManager(
+                host=self.host.text(),
+                port=int(self.port.text()),
+                dbname=self.dbname.text(), 
+                user=self.user.text(),
+                password=self.password.text()
+            )
+            db.ensure_connection()
+            db.close()
+            QMessageBox.information(self, "Database", "Connessione al database riuscita!")
+            self.accept()
+        except Exception as e:
+            QMessageBox.warning(self, "Errore Database", f"Errore di connessione:\n{str(e)}")
+            return
 
     def load_db_settings(self):
         """
