@@ -32,10 +32,16 @@ class MainWindow(QMainWindow):
         Initialize the main window, load app info, and set up UI components.
         """
         self.db = None
+        # Inizializza logger
+        from logger import Logger
+        self.logger = Logger()
+        
         # Load app info from JSON
         appinfo_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'appinfo.json')
         with open(appinfo_path, encoding='utf-8') as f:
             self.appinfo = json.load(f)
+            self.logger.info(f"App info loaded: {self.appinfo.get('app_name')} v{self.appinfo.get('version')}")
+            
         self.translator = Translator()
         super().__init__()
         self.setWindowTitle(self.appinfo.get('app_name', 'Lab Automation'))
@@ -144,13 +150,17 @@ class MainWindow(QMainWindow):
         Create a new project: select folder, enter project name, and create .json and .inst files.
         """
         from PyQt5.QtWidgets import QFileDialog, QMessageBox, QInputDialog
+        self.logger.info("Starting new project creation...")
         dir_path = QFileDialog.getExistingDirectory(self, self.translator.t('select_project_folder'))
         if dir_path:
+            self.logger.debug(f"Selected directory: {dir_path}")
             project_name, ok = QInputDialog.getText(self, self.translator.t('project'), self.translator.t('enter_project_name'))
             if not ok or not project_name.strip():
+                self.logger.info("Project creation cancelled")
                 return
             project_id = str(uuid.uuid4())
             now = datetime.datetime.now().isoformat()
+            self.logger.info(f"Creating project: {project_name} (ID: {project_id})")
             # Load naming settings
             settings = QSettings('LabAutomation', 'App')
             adv_naming = settings.value('advanced_naming', False, type=bool)
@@ -195,13 +205,17 @@ class MainWindow(QMainWindow):
         Open an existing project: select .json file and load its data.
         """
         from PyQt5.QtWidgets import QFileDialog, QMessageBox
+        self.logger.info("Opening project...")
         file_path, _ = QFileDialog.getOpenFileName(self, self.translator.t('open_project'), '', 'Project Files (*.json)')
         if file_path:
             try:
                 with open(file_path, 'r', encoding='utf-8') as f:
                     project_data = json.load(f)
                 self.current_project_dir = os.path.dirname(file_path)
+                self.logger.info(f"Opening project: {project_data.get('project_name', '')} from {file_path}")
                 self.current_project_data = project_data
+                # Set log directory
+                self.logger.set_project_directory(self.current_project_dir)
                 self.refresh_project_files()
                 QMessageBox.information(self, self.translator.t('project'), self.translator.t('project_opened')+f'\n{project_data.get("project_name", "")}')
                 # Salva percorso ultimo progetto
@@ -454,19 +468,25 @@ class MainWindow(QMainWindow):
         if not self.current_project_dir:
             return
         file_path = os.path.join(self.current_project_dir, fname)
-        reply = QMessageBox.question(self, "Elimina file", f"Vuoi eliminare il file {fname}?", QMessageBox.Yes | QMessageBox.No)
+        reply = QMessageBox.question(self, "Delete file", f"Do you want to delete file {fname}?", QMessageBox.Yes | QMessageBox.No)
         if reply == QMessageBox.Yes:
+            self.logger.info(f"Deleting file: {fname}")
             try:
                 os.remove(file_path)
-            except Exception:
+                self.logger.debug(f"File deleted: {file_path}")
+            except Exception as e:
+                self.logger.error(f"Error while deleting file {fname}: {str(e)}")
                 pass
-            # Rimuovi dal progetto
+            # Remove from project
             if fname in self.current_project_data.get('eff_files', []):
                 self.current_project_data['eff_files'].remove(fname)
+                self.logger.debug(f"Removed {fname} from eff_files list")
             if fname in self.current_project_data.get('was_files', []):
                 self.current_project_data['was_files'].remove(fname)
+                self.logger.debug(f"Removed {fname} from was_files list")
             if fname == self.current_project_data.get('inst_file'):
                 self.current_project_data['inst_file'] = ''
+                self.logger.debug(f"Removed {fname} as inst_file")
             self.save_project_json()
             self.refresh_project_files()
 

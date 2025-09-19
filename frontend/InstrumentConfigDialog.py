@@ -43,20 +43,35 @@ class InstrumentConfigDialog(QDialog):
 
     def init_ui(self):
         layout = QHBoxLayout(self)
+        
+        # Left panel with list and buttons
         left_panel = QVBoxLayout()
+        
+        # Button panel
+        button_panel = QHBoxLayout()
         add_btn = QPushButton("Aggiungi strumento")
         add_btn.clicked.connect(self.add_instrument_dialog)
-        left_panel.addWidget(add_btn)
+        save_btn = QPushButton("Salva configurazione")
+        save_btn.clicked.connect(self.save_instruments)
+        button_panel.addWidget(add_btn)
+        button_panel.addWidget(save_btn)
+        left_panel.addLayout(button_panel)
+        
+        # Instrument list
         self.list_widget = QListWidget()
         for inst in self.instruments:
             name = inst.get('name', 'Strumento')
             self.list_widget.addItem(name)
         self.list_widget.currentRowChanged.connect(self.on_instrument_selected)
         left_panel.addWidget(self.list_widget, 1)
+        
         layout.addLayout(left_panel, 2)
+        
+        # Editor panel
         self.editor_widget = QWidget()
         self.editor_layout = QVBoxLayout(self.editor_widget)
         layout.addWidget(self.editor_widget, 5)
+        
         if self.instruments:
             self.list_widget.setCurrentRow(0)
         else:
@@ -167,6 +182,7 @@ class InstrumentConfigDialog(QDialog):
             callbacks = {
                 'enabled': self.on_channel_enabled_changed,
                 'max_current': self.on_channel_current_changed,
+                'max_voltage': self.on_channel_voltage_changed,
                 'name': self.on_channel_name_changed
             }
             table = PowerSupplyConfigDialog.create_channel_table(channels, channel_ids, max_current, max_voltage, self, callbacks)
@@ -220,6 +236,15 @@ class InstrumentConfigDialog(QDialog):
             except Exception:
                 self.current_instrument['channels'][row]['max_current'] = 0.0
             self.save_instruments()
+
+    def on_channel_voltage_changed(self, row, val):
+        if self.current_instrument is not None:
+            try:
+                self.current_instrument['channels'][row]['max_voltage'] = float(val)
+            except Exception:
+                self.current_instrument['channels'][row]['max_voltage'] = 0.0
+            self.save_instruments()
+
     def on_channel_meas_type_changed(self, row, val):
         if self.current_instrument is not None:
             self.current_instrument['channels'][row]['meas_type'] = val

@@ -90,6 +90,7 @@ class PowerSupplyConfigDialog(QDialog):
             if max_voltage is not None:
                 volt_edit.setPlaceholderText(f"max {max_voltage}")
                 volt_edit.setValidator(QDoubleValidator(0.0, float(max_voltage), 3, volt_edit))
+            volt_edit.textChanged.connect(lambda val, r=row: callbacks['max_voltage'](r, val))
             table.setCellWidget(row, 3, volt_edit)
             name_edit = QLineEdit(ch.get('name', f'CH{row+1}'))
             name_edit.textChanged.connect(lambda val, r=row: callbacks['name'](r, val))
