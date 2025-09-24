@@ -32,7 +32,8 @@ class MainWindow(QMainWindow):
         Initialize the main window, load app info, and set up UI components.
         """
         self.db = None
-        # Inizializza logger
+        self.db_manager = None
+        # Initialize logger
         from logger import Logger
         self.logger = Logger()
         
@@ -45,6 +46,9 @@ class MainWindow(QMainWindow):
         self.translator = Translator()
         super().__init__()
         self.setWindowTitle(self.appinfo.get('app_name', 'Lab Automation'))
+        
+        # Initialize database connection
+        self.initialize_database_connection()
         self.load_instruments = LoadInstruments()
         lib_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'Instruments_LIB', 'instruments_lib.json')
         self.load_instruments.load_instruments(lib_path)
@@ -113,6 +117,10 @@ class MainWindow(QMainWindow):
         db_action = QAction(self.translator.t('database_settings'), self)
         db_action.triggered.connect(self.open_db_settings)
         settings_menu.addAction(db_action)
+        # Database configuration action
+        db_config_action = QAction("Database Configuration", self)
+        db_config_action.triggered.connect(self.show_database_config)
+        settings_menu.addAction(db_config_action)
         # Help menu
         help_menu = menubar.addMenu(self.translator.t('help'))
         info_action = QAction(self.translator.t('about_software'), self)
@@ -216,6 +224,9 @@ class MainWindow(QMainWindow):
                 self.current_project_data = project_data
                 # Set log directory
                 self.logger.set_project_directory(self.current_project_dir)
+                
+                # Load or create database project entry
+                self.sync_project_with_database()
                 self.refresh_project_files()
                 QMessageBox.information(self, self.translator.t('project'), self.translator.t('project_opened')+f'\n{project_data.get("project_name", "")}')
                 # Salva percorso ultimo progetto
@@ -414,6 +425,96 @@ class MainWindow(QMainWindow):
     def open_hexdec_converter(self):
         dlg = HexDecConverterDialog(self)
         dlg.exec_()
+    
+    def show_database_config(self):
+        """
+        Show database configuration dialog.
+        """
+        try:
+            from database_config_dialog import DatabaseConfigDialog
+            dialog = DatabaseConfigDialog(self)
+            
+            if dialog.exec_() == QDialog.Accepted:
+                # Update database manager with new configuration
+                self.db_manager = dialog.get_database_manager()
+                self.logger.info("Database configuration updated")
+                
+                # Test connection and log result
+                if self.db_manager.test_connection():
+                    self.logger.info("Database connection established successfully")
+                else:
+                    self.logger.warning("Database connection test failed")
+                    
+        except Exception as e:
+            self.logger.error(f"Failed to open database configuration dialog: {str(e)}")
+            from PyQt5.QtWidgets import QMessageBox
+            QMessageBox.critical(self, "Error", f"Failed to open database configuration: {str(e)}")
+    
+    def sync_project_with_database(self):
+        """
+        Synchronize current project with database entry.
+        Creates database entry if it doesn't exist.
+        """
+        if not self.db_manager or not self.current_project_data:
+            return
+        
+        try:
+            from models import Project
+            
+            # Create project instance
+            project = Project(self.db_manager)
+            
+            # Try to load existing project by name
+            project_name = self.current_project_data.get('project_name', '')
+            if not project_name:
+                self.logger.warning("Project has no name, skipping database sync")
+                return
+            
+            if not project.load_by_name(project_name):
+                # Project doesn't exist in database, create it
+                description = self.current_project_data.get('description', '')
+                parametri_globali = {
+                    'project_id': self.current_project_data.get('project_id'),
+                    'created_with_version': self.current_project_data.get('version'),
+                    'project_dir': self.current_project_dir
+                }
+                
+                if project.create(project_name, description, parametri_globali):
+                    self.logger.info(f"Created database entry for project: {project_name}")
+                else:
+                    self.logger.error(f"Failed to create database entry for project: {project_name}")
+            else:
+                self.logger.debug(f"Project already exists in database: {project_name}")
+            
+        except Exception as e:
+            self.logger.error(f"Failed to sync project with database: {str(e)}")
+    
+    def initialize_database_connection(self):
+        """
+        Initialize database connection on application startup.
+        """
+        try:
+            # Try to load existing database configuration
+            config_file = os.path.join(os.path.dirname(__file__), 'database_config.json')
+            if os.path.exists(config_file):
+                with open(config_file, 'r', encoding='utf-8') as f:
+                    config = json.load(f)
+                
+                from database import DatabaseManager
+                self.db_manager = DatabaseManager(**config)
+                
+                # Test connection silently
+                if self.db_manager.test_connection():
+                    self.logger.info("Database connection established on startup")
+                else:
+                    self.logger.warning("Database connection test failed on startup")
+                    self.db_manager = None
+            else:
+                self.logger.debug("No database configuration file found")
+                
+        except Exception as e:
+            self.logger.warning(f"Failed to initialize database connection: {str(e)}")
+            self.db_manager = None
 
     def show_file_context_menu(self, pos):
         from PyQt5.QtWidgets import QMenu, QApplication
